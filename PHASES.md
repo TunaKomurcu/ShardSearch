@@ -2,7 +2,7 @@
 
 Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" kriterini karşılamadan bir sonrakine geçilmez.
 
-## Faz 0: Kurulum
+## Faz 0: Kurulum ✅ (Tamamlandı)
 - Proje iskeleti (`src/`, `tests/`, `benchmarks/`, `docs/` klasörleri)
 - Bağımlılık yönetimi kurulumu (uv veya poetry)
 - pytest, ruff/black kurulumu
