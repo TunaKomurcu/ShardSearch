@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv / venv
+.venv/
+
+# SQLite veri dosyaları (Faz 4+)
+*.db
+*.sqlite3
+
+# Referans korpus — büyük/harici veri, repoya girmez
+# Nasıl elde edileceği docs/corpus.md içinde açıklanıyor
+data/corpus/*
+!data/corpus/.gitkeep
+
+# Locust / benchmark çıktıları (Faz 10+)
+benchmarks/results/
+
+# Editör / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
