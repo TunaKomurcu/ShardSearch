@@ -23,7 +23,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - **Doğrulama:** aynı korpusta `rank_bm25` (sadece `tests/validation/`'da) ile üretilen skorlarla karşılaştırma
 - **Definition of Done:** kendi skorlarımızın sıralaması, referans kütüphaneninkiyle yüksek korelasyon gösteriyor (ilk 5 sonuç aynı sırada, ya da fark açıklanabilir)
 
-## Faz 4: Kalıcı Depolama (SQLite)
+## Faz 4: Kalıcı Depolama (SQLite) ✅ (Tamamlandı)
 - Ters indeksi SQLite'a yazma/okuma katmanı
 - **Definition of Done:** uygulama kapanıp yeniden başlatıldığında indeks kayboluyor, bellekten değil diskten yükleniyor
 
