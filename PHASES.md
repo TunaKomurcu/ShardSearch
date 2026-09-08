@@ -13,7 +13,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - **Test:** en az 10 farklı Türkçe cümle + edge case'ler (büyük İ, apostroflu kelimeler — "Türkiye'nin", sayı içeren metin)
 - **Definition of Done:** tüm test cümleleri beklenen token listesini üretiyor
 
-## Faz 2: Ters İndeks (bellek içi)
+## Faz 2: Ters İndeks (bellek içi) ✅ (Tamamlandı)
 - `token → [(belge_id, frekans, [pozisyonlar])]` veri yapısı
 - **Test:** küçük bir test korpusunda (10-20 cümle), bilinen bir kelimenin doğru belgelerde, doğru frekansla bulunması
 - **Definition of Done:** postings listesi manuel hesaplanan beklenen değerle birebir eşleşiyor
