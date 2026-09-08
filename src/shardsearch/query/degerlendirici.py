@@ -61,3 +61,28 @@ def _ifade_esles(ifade: Ifade, indeks: _PostingsKaynagi) -> set[str]:
                 sonuc.add(belge_id)
                 break
     return sonuc
+
+
+def terimleri_topla(dugum: SorguDugumu) -> list[str]:
+    """AST'deki tüm Terim/Ifade yapraklarını düz bir kelime listesine çevirir.
+
+    BM25 skorlaması için köprü görevi görür: degerlendir() bize sadece
+    eşleşen belge_id KÜMESİNİ verir (sıralama yok), bm25_skoru() ise düz
+    bir kelime listesi bekler. Bu fonksiyon ikisi arasındaki farkı kapatır.
+
+    Sorgunun AND/OR yapısı burada BİLEREK yok sayılır — sadece hangi
+    kelimelerin sorguda geçtiği toplanır. Örneğin "kedi OR köpek"
+    sorgusunda ikisi de skora dahil edilir: bir belge sadece "kedi"
+    içeriyorsa "köpek" için tf=0 olur ve bm25_skoru() o terimin katkısını
+    zaten sıfırlar — ayrı bir özel durum koduna gerek yok. AND/OR/phrase'in
+    asıl anlamı zaten degerlendir() ile "hangi belgeler aday kümesine
+    girer" kararında uygulanmış oluyor; bu fonksiyon sadece o adayları
+    sıralamak için gereken kelime listesini üretir.
+    """
+    if isinstance(dugum, Terim):
+        return [dugum.kelime]
+    if isinstance(dugum, Ifade):
+        return list(dugum.kelimeler)
+    if isinstance(dugum, Ve | Veya):
+        return terimleri_topla(dugum.sol) + terimleri_topla(dugum.sag)
+    raise TypeError(f"Bilinmeyen sorgu düğümü: {dugum!r}")

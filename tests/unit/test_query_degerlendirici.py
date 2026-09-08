@@ -5,7 +5,7 @@ değil) doğrulayan negatif bir test dahil.
 """
 
 from shardsearch.index import TersIndeks
-from shardsearch.query import ayristir, degerlendir
+from shardsearch.query import ayristir, degerlendir, terimleri_topla
 
 
 def _test_indeksi() -> TersIndeks:
@@ -67,3 +67,23 @@ def test_ve_oncelik_or_dan_once_uygulanir() -> None:
     # kedi AND köpek (kesişim, ardışıklık aranmaz) = {d01,d02,d04,d05}, OR balık {d03}
     beklenen = {"d01", "d02", "d03", "d04", "d05"}
     assert degerlendir(ayristir("kedi AND köpek OR balık"), indeks) == beklenen
+
+
+def test_terimleri_topla_tek_terim() -> None:
+    assert terimleri_topla(ayristir("kedi")) == ["kedi"]
+
+
+def test_terimleri_topla_ifade_kelimelerini_ayri_ayri_dondurur() -> None:
+    assert terimleri_topla(ayristir('"kedi köpek"')) == ["kedi", "köpek"]
+
+
+def test_terimleri_topla_and_or_farki_gozetmeden_hepsini_toplar() -> None:
+    # AND/OR yapısı burada yok sayılır — BM25 skorlaması için ikisi de
+    # aynı şekilde "sorguda geçen kelime" sayılır.
+    assert terimleri_topla(ayristir("kedi AND köpek")) == ["kedi", "köpek"]
+    assert terimleri_topla(ayristir("kedi OR köpek")) == ["kedi", "köpek"]
+
+
+def test_terimleri_topla_karmasik_agac() -> None:
+    beklenen = ["a", "b", "c", "d", "e", "f"]
+    assert terimleri_topla(ayristir('a AND b OR "c d" AND (e OR f)')) == beklenen

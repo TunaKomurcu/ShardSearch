@@ -1,14 +1,14 @@
 """Ters indeksin SQLite üzerinde kalıcı hali.
 
 TersIndeks (Faz 2) ile BİREBİR AYNI metot yüzeyini sunar (belge_ekle,
-postings_getir, belge_sayisi, belge_uzunlugu, ortalama_belge_uzunlugu) —
-tek fark, veri bellekte bir dict'te değil diskte üç tabloda tutuluyor.
-Resmi bir Protocol/ABC tanımlanmadı; şimdilik duck-typing yeterli, iki
-backend'i gerçekten birbirinin yerine geçirmemiz gereken bir faza
-gelince (muhtemelen Faz 6/7) formalleştiririz.
+postings_getir, belge_sayisi, belge_uzunlugu, ortalama_belge_uzunlugu,
+belge_metni) — tek fark, veri bellekte bir dict'te değil diskte üç
+tabloda tutuluyor. Resmi bir Protocol/ABC tanımlanmadı; şimdilik
+duck-typing yeterli.
 
 Şema:
-- belgeler(belge_id PK, uzunluk): her belgenin token sayısı.
+- belgeler(belge_id PK, uzunluk, metin): her belgenin token sayısı ve
+  orijinal metni (Faz 6'da /search sonuçlarında göstermek için eklendi).
 - postings(token, belge_id, frekans, pozisyonlar), PK(token, belge_id):
   bu birincil anahtar aynı zamanda (token, belge_id) sırasıyla bir index
   oluşturur, bu yüzden "WHERE token=? ORDER BY belge_id" sorgusu ekstra
@@ -20,10 +20,23 @@ gelince (muhtemelen Faz 6/7) formalleştiririz.
   3'te bilinçli kaçındığımız O(n) hesaplamaya SQLite'ta geri dönmüş
   oluruz. Bunun yerine her belge_ekle/upsert'te aynı transaction içinde
   bu tek satır artımlı güncellenir, okuma O(1) kalır.
+
+Thread-safety (Faz 6'da FastAPI entegrasyonu için eklendi):
+`check_same_thread=False` SADECE Python'un "bu bağlantı oluşturulduğu
+thread dışında kullanılamaz" kontrolünü kapatır — SQLite bağlantısının
+kendisi hâlâ eşzamanlı çoklu-thread erişimine karşı güvenli değildir.
+FastAPI'de senkron (`def`) route'lar Starlette tarafından bir thread
+pool'da çalıştırılır, yani API'nin paylaştığı tek SqliteTersIndeks
+bağlantısına gerçekten farklı thread'lerden erişilebilir. `self._kilit`
+(bir `threading.Lock`), bağlantıya dokunan her metodu sarmalayarak
+SQLite'ın zımni "aynı anda tek kullanıcı" varsayımını kod tarafında
+garanti eder — tam bir connection pool kurmadan, kapsam için yeterli en
+küçük doğru çözüm.
 """
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 from shardsearch.index.postings import Posting
@@ -32,7 +45,8 @@ from shardsearch.tokenizer import tokenize
 _SEMA = """
 CREATE TABLE IF NOT EXISTS belgeler (
     belge_id TEXT PRIMARY KEY,
-    uzunluk INTEGER NOT NULL
+    uzunluk INTEGER NOT NULL,
+    metin TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS postings (
@@ -63,16 +77,18 @@ CREATE TABLE IF NOT EXISTS meta (
 
 class SqliteTersIndeks:
     def __init__(self, veritabani_yolu: str | Path) -> None:
-        self._conn = sqlite3.connect(veritabani_yolu)
-        self._conn.executescript(_SEMA)
-        self._conn.execute(
-            "INSERT OR IGNORE INTO meta (id, toplam_belge_sayisi, toplam_belge_uzunlugu) "
-            "VALUES (0, 0, 0)"
-        )
-        self._conn.commit()
+        self._conn = sqlite3.connect(veritabani_yolu, check_same_thread=False)
+        self._kilit = threading.Lock()
+        with self._kilit:
+            self._conn.executescript(_SEMA)
+            self._conn.execute(
+                "INSERT OR IGNORE INTO meta (id, toplam_belge_sayisi, toplam_belge_uzunlugu) "
+                "VALUES (0, 0, 0)"
+            )
+            self._conn.commit()
 
     def belge_ekle(self, belge_id: str, metin: str) -> None:
-        with self._conn:
+        with self._kilit, self._conn:
             var_mi = self._conn.execute(
                 "SELECT 1 FROM belgeler WHERE belge_id = ?", (belge_id,)
             ).fetchone()
@@ -85,8 +101,8 @@ class SqliteTersIndeks:
                 pozisyonlar_by_token.setdefault(token, []).append(pozisyon)
 
             self._conn.execute(
-                "INSERT INTO belgeler (belge_id, uzunluk) VALUES (?, ?)",
-                (belge_id, len(tokenler)),
+                "INSERT INTO belgeler (belge_id, uzunluk, metin) VALUES (?, ?, ?)",
+                (belge_id, len(tokenler), metin),
             )
             self._conn.executemany(
                 "INSERT INTO postings (token, belge_id, frekans, pozisyonlar) "
@@ -99,6 +115,9 @@ class SqliteTersIndeks:
             self._meta_guncelle(sayisi_delta=1, uzunluk_delta=len(tokenler))
 
     def _belgeyi_sil(self, belge_id: str) -> None:
+        # Çağıran (belge_ekle) zaten self._kilit'i tutuyor — burada ayrıca
+        # kilitlenmiyoruz (aynı thread'de tekrar kilitlenmek threading.Lock
+        # ile kilitlenmeye çalışırken sonsuza kadar beklemeye yol açar).
         eski_uzunluk = self._conn.execute(
             "SELECT uzunluk FROM belgeler WHERE belge_id = ?", (belge_id,)
         ).fetchone()[0]
@@ -114,34 +133,47 @@ class SqliteTersIndeks:
         )
 
     def postings_getir(self, token: str) -> list[Posting]:
-        satirlar = self._conn.execute(
-            "SELECT belge_id, frekans, pozisyonlar FROM postings "
-            "WHERE token = ? ORDER BY belge_id",
-            (token,),
-        ).fetchall()
+        with self._kilit:
+            satirlar = self._conn.execute(
+                "SELECT belge_id, frekans, pozisyonlar FROM postings "
+                "WHERE token = ? ORDER BY belge_id",
+                (token,),
+            ).fetchall()
         return [
             Posting(belge_id, frekans, json.loads(pozisyonlar))
             for belge_id, frekans, pozisyonlar in satirlar
         ]
 
     def belge_sayisi(self) -> int:
-        (deger,) = self._conn.execute(
-            "SELECT toplam_belge_sayisi FROM meta WHERE id = 0"
-        ).fetchone()
+        with self._kilit:
+            (deger,) = self._conn.execute(
+                "SELECT toplam_belge_sayisi FROM meta WHERE id = 0"
+            ).fetchone()
         return deger
 
     def belge_uzunlugu(self, belge_id: str) -> int:
-        satir = self._conn.execute(
-            "SELECT uzunluk FROM belgeler WHERE belge_id = ?", (belge_id,)
-        ).fetchone()
+        with self._kilit:
+            satir = self._conn.execute(
+                "SELECT uzunluk FROM belgeler WHERE belge_id = ?", (belge_id,)
+            ).fetchone()
+        if satir is None:
+            raise KeyError(belge_id)
+        return satir[0]
+
+    def belge_metni(self, belge_id: str) -> str:
+        with self._kilit:
+            satir = self._conn.execute(
+                "SELECT metin FROM belgeler WHERE belge_id = ?", (belge_id,)
+            ).fetchone()
         if satir is None:
             raise KeyError(belge_id)
         return satir[0]
 
     def ortalama_belge_uzunlugu(self) -> float:
-        sayisi, uzunluk = self._conn.execute(
-            "SELECT toplam_belge_sayisi, toplam_belge_uzunlugu FROM meta WHERE id = 0"
-        ).fetchone()
+        with self._kilit:
+            sayisi, uzunluk = self._conn.execute(
+                "SELECT toplam_belge_sayisi, toplam_belge_uzunlugu FROM meta WHERE id = 0"
+            ).fetchone()
         if sayisi == 0:
             return 0.0
         return uzunluk / sayisi

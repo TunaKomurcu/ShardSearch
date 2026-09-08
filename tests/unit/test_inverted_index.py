@@ -103,3 +103,12 @@ def test_belge_sayisi_ve_uzunluk_istatistikleri() -> None:
     assert indeks.belge_sayisi() == 3
     assert indeks.belge_uzunlugu("y") == 1
     assert indeks.ortalama_belge_uzunlugu() == pytest.approx(9 / 3)
+
+
+def test_belge_metni_saklanir_ve_upsert_ile_guncellenir() -> None:
+    indeks = TersIndeks()
+    indeks.belge_ekle("d01", "Kedi masada uyuyor.")
+    assert indeks.belge_metni("d01") == "Kedi masada uyuyor."
+
+    indeks.belge_ekle("d01", "Köpek bahçede koşuyor.")
+    assert indeks.belge_metni("d01") == "Köpek bahçede koşuyor."

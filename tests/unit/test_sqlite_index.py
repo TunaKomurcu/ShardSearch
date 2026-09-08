@@ -81,6 +81,21 @@ def test_olmayan_belgenin_uzunlugu_keyerror_verir() -> None:
         indeks.belge_uzunlugu("olmayan_belge")
 
 
+def test_olmayan_belgenin_metni_keyerror_verir() -> None:
+    indeks = _bellekte_indeks()
+    with pytest.raises(KeyError):
+        indeks.belge_metni("olmayan_belge")
+
+
+def test_belge_metni_saklanir_ve_upsert_ile_guncellenir() -> None:
+    indeks = _bellekte_indeks()
+    indeks.belge_ekle("d01", "Kedi masada uyuyor.")
+    assert indeks.belge_metni("d01") == "Kedi masada uyuyor."
+
+    indeks.belge_ekle("d01", "Köpek bahçede koşuyor.")
+    assert indeks.belge_metni("d01") == "Köpek bahçede koşuyor."
+
+
 def test_disk_kalicidir_yeniden_baslatinca_bellekten_degil_diskten_yuklenir(tmp_path) -> None:
     veritabani_yolu = tmp_path / "test_indeks.db"
 

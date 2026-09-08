@@ -32,7 +32,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - **Test:** operatör önceliği açıkça test ediliyor (`a AND b OR c` — hangi sırayla değerlendiriliyor)
 - **Definition of Done:** karmaşık bir sorgu string'i doğru ayrıştırma ağacına çevriliyor
 
-## Faz 6: FastAPI Sarmalayıcı — İLK ÇALIŞAN MVP
+## Faz 6: FastAPI Sarmalayıcı — İLK ÇALIŞAN MVP ✅ (Tamamlandı)
 - `POST /index` (belge ekleme), `GET /search` (arama) endpoint'leri
 - **Definition of Done:** gerçek bir HTTP isteğiyle uçtan uca, tek-node arama çalışıyor — bu noktada "çalışan bir ürün" var
 

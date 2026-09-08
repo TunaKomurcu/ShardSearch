@@ -1,5 +1,5 @@
 from shardsearch.query.ast import Ifade, SorguDugumu, Terim, Ve, Veya
-from shardsearch.query.degerlendirici import degerlendir
+from shardsearch.query.degerlendirici import degerlendir, terimleri_topla
 from shardsearch.query.parser import SorguHatasi, ayristir
 
 __all__ = [
@@ -11,4 +11,5 @@ __all__ = [
     "Veya",
     "ayristir",
     "degerlendir",
+    "terimleri_topla",
 ]

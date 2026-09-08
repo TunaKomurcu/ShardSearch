@@ -30,6 +30,7 @@ class TersIndeks:
         # bulmak için: her token için tüm index'i taramamak amacıyla tutulur.
         self._belge_tokenlari: dict[str, set[str]] = {}
         self._belge_uzunluklari: dict[str, int] = {}
+        self._belge_metinleri: dict[str, str] = {}
         self._toplam_belge_uzunlugu: int = 0
 
     def belge_ekle(self, belge_id: str, metin: str) -> None:
@@ -43,6 +44,7 @@ class TersIndeks:
 
         self._belge_tokenlari[belge_id] = set(pozisyonlar_by_token.keys())
         self._belge_uzunluklari[belge_id] = len(tokenler)
+        self._belge_metinleri[belge_id] = metin
         self._toplam_belge_uzunlugu += len(tokenler)
         for token, pozisyonlar in pozisyonlar_by_token.items():
             postings = self._index.setdefault(token, [])
@@ -59,6 +61,7 @@ class TersIndeks:
                 del self._index[token]
         del self._belge_tokenlari[belge_id]
         self._toplam_belge_uzunlugu -= self._belge_uzunluklari.pop(belge_id)
+        del self._belge_metinleri[belge_id]
 
     def postings_getir(self, token: str) -> list[Posting]:
         return self._index.get(token, [])
@@ -68,6 +71,9 @@ class TersIndeks:
 
     def belge_uzunlugu(self, belge_id: str) -> int:
         return self._belge_uzunluklari[belge_id]
+
+    def belge_metni(self, belge_id: str) -> str:
+        return self._belge_metinleri[belge_id]
 
     def ortalama_belge_uzunlugu(self) -> float:
         if not self._belge_tokenlari:
