@@ -36,7 +36,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - `POST /index` (belge ekleme), `GET /search` (arama) endpoint'leri
 - **Definition of Done:** gerçek bir HTTP isteğiyle uçtan uca, tek-node arama çalışıyor — bu noktada "çalışan bir ürün" var
 
-## Faz 7: Sharding
+## Faz 7: Sharding ✅ (Tamamlandı)
 - Consistent hashing ile belge dağıtımı (hatırlarsan hash tablosu/sharding dersi)
 - **Test:** belgeler shard'lara dengeli dağılıyor mu (dağılım istatistiği); shard sayısı değişince (resharding) minimum veri yer değiştiriyor mu
 - **Definition of Done:** N shard'a dağıtılmış veri, hangi shard'da olduğu doğru şekilde bulunabiliyor
