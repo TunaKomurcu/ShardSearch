@@ -42,3 +42,8 @@ Aşağıdakileri önerme, kurma, importlama. Kullanıcı bunları bilerek yasakl
 ## Belirsizlik Durumunda
 
 Kapsam dışı bir şeye ihtiyaç olduğunu düşünürsen (SPEC.md'de olmayan bir kütüphane, yeni bir bağımlılık), **asla sessizce ekleme** — önce kullanıcıya sor, gerekçeni açıkla.
+
+## Tasarım Kararlarında Onay Eşiği
+
+- **Veri modelini veya sorgu sözleşmesini değiştiren kararlar** (ör. operatör önceliği, hangi sözdizimi hata verir, şema değişiklikleri) — her zaman önce sor, kod yazmadan onay bekle. Bunlar geri alınması pahalı ve kullanıcının gerçekten karar vermek isteyeceği türden seçimler.
+- **Sadece kullanıcı deneyimi esnekliği sağlayan, geri alınması bedava kararlar** (ör. `AND`/`OR` anahtar kelimelerinin büyük/küçük harf duyarsız olması) — dokümante ederek (kod yorumu ve/veya `docs/`) devam edilebilir, ayrı onay gerekmez.
