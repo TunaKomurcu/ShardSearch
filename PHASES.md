@@ -18,7 +18,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - **Test:** küçük bir test korpusunda (10-20 cümle), bilinen bir kelimenin doğru belgelerde, doğru frekansla bulunması
 - **Definition of Done:** postings listesi manuel hesaplanan beklenen değerle birebir eşleşiyor
 
-## Faz 3: BM25 Skorlama
+## Faz 3: BM25 Skorlama ✅ (Tamamlandı)
 - TF, IDF, belge uzunluğu normalizasyonu — formülün her parçası ayrı fonksiyon, ayrı test
 - **Doğrulama:** aynı korpusta `rank_bm25` (sadece `tests/validation/`'da) ile üretilen skorlarla karşılaştırma
 - **Definition of Done:** kendi skorlarımızın sıralaması, referans kütüphaneninkiyle yüksek korelasyon gösteriyor (ilk 5 sonuç aynı sırada, ya da fark açıklanabilir)

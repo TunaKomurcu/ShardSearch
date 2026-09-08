@@ -11,6 +11,12 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+# SADECE tests/validation/ içinde referans olarak kullanılır — src/ asla
+# import etmez (bkz. tests/validation/test_rank_bm25_izolasyonu.py).
+# Ayrı grupta tutulduğu için `uv sync` (validation belirtilmeden) bunu kurmaz.
+validation = [
+    "rank_bm25>=0.2.2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

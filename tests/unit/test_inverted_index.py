@@ -4,6 +4,8 @@ Beklenen frekans/pozisyon değerleri, her belgenin tokenize() çıktısı elle
 çıkarılarak hesaplandı (bkz. Faz 2 planı).
 """
 
+import pytest
+
 from shardsearch.index import Posting, TersIndeks
 
 # 12 kısa belgeden oluşan küçük test korpusu. "kedi" kelimesi kasıtlı
@@ -79,3 +81,25 @@ def test_ayni_belge_id_ile_tekrar_ekleme_upsert_yapar() -> None:
     # Yeni içerikteki token'lar güncel pozisyonlarla görünmeli
     assert indeks.postings_getir("kuş") == [Posting("up1", 1, [0])]
     assert indeks.postings_getir("balık") == [Posting("up1", 1, [2])]
+
+
+def test_belge_sayisi_ve_uzunluk_istatistikleri() -> None:
+    indeks = TersIndeks()
+    assert indeks.belge_sayisi() == 0
+    assert indeks.ortalama_belge_uzunlugu() == 0.0
+
+    indeks.belge_ekle("x", "kedi kedi köpek")  # 3 token
+    indeks.belge_ekle("y", "köpek kuş")  # 2 token
+    indeks.belge_ekle("z", "kedi kuş balık balık hayvan")  # 5 token
+
+    assert indeks.belge_sayisi() == 3
+    assert indeks.belge_uzunlugu("x") == 3
+    assert indeks.belge_uzunlugu("y") == 2
+    assert indeks.belge_uzunlugu("z") == 5
+    assert indeks.ortalama_belge_uzunlugu() == pytest.approx(10 / 3)
+
+    # Upsert sonrası istatistikler güncellenmeli, eski uzunluk toplamdan düşülmeli
+    indeks.belge_ekle("y", "köpek")  # 2 token -> 1 token
+    assert indeks.belge_sayisi() == 3
+    assert indeks.belge_uzunlugu("y") == 1
+    assert indeks.ortalama_belge_uzunlugu() == pytest.approx(9 / 3)
