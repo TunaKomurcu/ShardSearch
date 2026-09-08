@@ -27,7 +27,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - Ters indeksi SQLite'a yazma/okuma katmanı
 - **Definition of Done:** uygulama kapanıp yeniden başlatıldığında indeks kayboluyor, bellekten değil diskten yükleniyor
 
-## Faz 5: Sorgu Ayrıştırıcı
+## Faz 5: Sorgu Ayrıştırıcı ✅ (Tamamlandı)
 - `AND`/`OR` boolean mantık, `"ifade eşleştirme"` (phrase, pozisyon bilgisini kullanarak)
 - **Test:** operatör önceliği açıkça test ediliyor (`a AND b OR c` — hangi sırayla değerlendiriliyor)
 - **Definition of Done:** karmaşık bir sorgu string'i doğru ayrıştırma ağacına çevriliyor
