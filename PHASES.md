@@ -8,7 +8,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - pytest, ruff/black kurulumu
 - **Definition of Done:** `pytest` (boş test seti olsa bile) hatasız çalışıyor, `git init` yapılmış
 
-## Faz 1: Tokenizer
+## Faz 1: Tokenizer ✅ (Tamamlandı)
 - Metni token'lara ayırma, küçük harfe çevirme (Türkçe İ/ı farkındalığıyla — `.lower()` Türkçe'de hatalı sonuç verir, bunu bilerek çöz), noktalama/sayı temizleme
 - **Test:** en az 10 farklı Türkçe cümle + edge case'ler (büyük İ, apostroflu kelimeler — "Türkiye'nin", sayı içeren metin)
 - **Definition of Done:** tüm test cümleleri beklenen token listesini üretiyor
