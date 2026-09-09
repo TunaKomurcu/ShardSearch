@@ -120,3 +120,47 @@ ayrı bir testle kanıtlandı) bir sapma. Detaylar: `docs/faz-8-sonrasi-durum.md
 kararlar (Elasticsearch'ün local IDF varsayılanı gibi) sıradandır —
 önemli olan bu yaklaşıklığın büyüklüğünü ÖLÇEBİLMEK ve NE ZAMAN
 büyüdüğünü açıklayabilmek, yok saymak değil.
+
+## 6. Event loop'u bloke eden "gizli" senkron çağrı (Faz 10)
+
+**Ne oldu:** Faz 10'un gerçek Locust yük testinde, eşzamanlı yük altında
+(8-30 kullanıcı) `/search` gecikmesi zamanla **sınırsız büyüdü** (450ms →
+60 saniye içinde 25 saniyeye kadar) — klasik bir kuyruk birikmesi imzası.
+İlk şüpheli, Faz 6'dan beri "gerçek yükte nasıl davranacağı bilinmiyor"
+diye not düşülen `SqliteTersIndeks`'in `threading.Lock`'ıydı.
+
+**Nasıl bulundu (ve yanlış şüpheli nasıl elendi):** Önce izole bir testle
+`threading.Lock`'ı temize çıkardım — hem ayrı hem paylaşılan Redis
+istemcileriyle 30 eşzamanlı çağrı, `SqliteTersIndeks`'e hiç dokunmadan,
+paralel ve hızlı (~0.45sn) tamamlandı. Bu, sorunun kilit mekanizmasında
+OLMADIĞINI kanıtladı ama kök nedeni bulmadı. Kod incelemesinde asıl
+neden ortaya çıktı: `GET /search` route'u `async def` olmasına rağmen,
+içindeki `AramaCache.getir()`/`kaydet()` çağrıları **doğrudan senkron**
+yapılıyordu — `await`'siz, `asyncio.to_thread`'siz. Redis erişilemezken
+bu çağrılar ~0.2-0.4sn sürüyordu (bkz. madde aşağıda) ve bu süre boyunca
+**tek event loop thread'ini tamamen bloke ediyordu** — uvicorn tek worker
+ile çalıştığı için, o an başka HİÇBİR isteğin işlenmesine izin vermeden.
+
+**Nasıl çözüldü:** `cache.getir()` ve `cache.kaydet()` çağrıları
+`asyncio.to_thread()` ile sarmalandı (senin önerdiğin `/index`'i
+`async def`'e çevirme deneyiyle birlikte). Aynı Locust senaryosu (30
+kullanıcı, 60sn) tekrar koşuldu: **27 istek → 945 istek** (35× artış),
+gecikme sınırsız büyümek yerine **sabit ve öngörülebilir** hale geldi
+(p50=1.7sn, p99=1.8sn, max=1.9sn — hâlâ Redis-yok senaryosunun getirdiği
+sabit bir gecikme var ama artık BÜYÜMÜYOR).
+
+**Ayrı, daha önce bulunan ve düzeltilen bir alt-sorun:** Aynı soruşturma
+sırasında, Redis erişilemezken `redis-py`'nin bağlantı-reddedildi
+durumunu ele alışının bu ortamda ~4 saniye sürdüğü de bulundu —
+`socket_connect_timeout`/`socket_timeout` eklenerek ~0.4sn'ye indirildi
+(bu, event loop bloklanması sorununu TEK BAŞINA çözmedi, sadece her bloke
+oluşun süresini kısalttı — asıl çözüm event loop'u hiç bloklamamaktı).
+
+**Genel ders:** `async def` bir route yazmak, o route'un içindeki HER
+ÇAĞRININ non-blocking olduğu anlamına gelmez — `async def` sadece
+event loop'ta çalışabilmeyi sağlar, içeride senkron/bloklayan bir
+kütüphane (redis-py gibi) çağrıldığında o senkron çağrı YİNE DE tüm
+event loop'u durdurur. Bu, "threading.Lock darboğaz mı" gibi görünüşte
+makul bir hipotezle başlayıp izole testlerle onu eleyerek, kod
+incelemesiyle asıl (daha temel, daha öğretici) nedene ulaşmanın iyi bir
+örneği — ilk şüpheli her zaman doğru şüpheli olmuyor.

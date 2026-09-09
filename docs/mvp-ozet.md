@@ -41,11 +41,14 @@ ertelendi — şu anki tek-node MVP için gereksizler:
   tanımlı olacak.
 - **Connection pool / gerçek eşzamanlılık optimizasyonu** — Faz 6'da
   SQLite erişimi tek bir `threading.Lock` ile serileştirildi. Faz 10'da
-  gerçek Locust yük testiyle ölçüldü: eşzamanlı yük altında ciddi bir
-  gecikme büyümesi VAR, ama izole testler bunun bu `threading.Lock`'tan
-  KAYNAKLANMADIĞINI gösterdi (bkz. `docs/known-limitations.md`) — asıl
-  kök neden bu ortama özgü Redis-erişilemez senaryosuyla ilgili görünüyor,
-  kesin olarak izole edilemedi.
+  gerçek Locust yük testiyle ölçüldü ve ÇÖZÜLDÜ: eşzamanlı yük altında
+  ciddi bir gecikme büyümesi vardı, ama kök neden bu `threading.Lock`
+  DEĞİL, `/search` route'unun içinde Redis çağrılarının event loop'u
+  doğrudan bloke etmesiydi — `asyncio.to_thread` ile sarmalanınca gecikme
+  büyümesi tamamen ortadan kalktı (27→945 istek/60sn). Detaylar:
+  `docs/yolculuk-ozeti.md` madde 6. `threading.Lock`'ın kendisi hâlâ
+  connection-pool seviyesinde optimize değil ama gerçek darboğaz o
+  değilmiş.
 - **Kimlik doğrulama, çoklu-kiracılık, rate limiting** — SPEC.md'de
   "bu bir teknik demo, prod SaaS değil" diye açıkça kapsam dışı.
 - **Kendi B-tree/LSM-tree, kendi HNSW, gelişmiş Türkçe morfoloji** —

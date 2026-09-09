@@ -28,6 +28,7 @@ döndürecek şekilde değiştiriyor (bkz. tests/unit/test_api.py) — `fakeredi
 bu dosyada asla import edilmiyor (bkz. test_fakeredis_izolasyonu.py).
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -119,16 +120,32 @@ async def _log_middleware(request: Request, call_next):
 
 
 @app.post("/index", response_model=BelgeEkleYaniti, status_code=201)
-def belge_ekle(istek: BelgeEkleIstegi) -> BelgeEkleYaniti:
+async def belge_ekle(istek: BelgeEkleIstegi) -> BelgeEkleYaniti:
+    # DENEY (Faz 10 sonrası performans soruşturması, bkz.
+    # docs/known-limitations.md): önceden senkron (`def`) bir route'tu,
+    # Starlette onu kendi anyio thread pool'unda çalıştırıyordu.
+    # `dagitik_ara()` (fan_out.py) ise shard sorguları için AYRI bir
+    # mekanizma (asyncio.to_thread, varsayılan asyncio executor)
+    # kullanıyor. Bu route'u da async'e çevirip AYNI asyncio.to_thread
+    # mekanizmasına taşımak, iki farklı thread pool'un çakışmasının
+    # gerçek darboğaz nedeni olup olmadığını test ediyor.
     shard_id = app.state.tutarli_hash.shard_bul(istek.belge_id)
-    app.state.shardlar[shard_id].belge_ekle(istek.belge_id, istek.metin)
-    app.state.cache.gecersiz_kil()
+    await asyncio.to_thread(
+        app.state.shardlar[shard_id].belge_ekle, istek.belge_id, istek.metin
+    )
+    await asyncio.to_thread(app.state.cache.gecersiz_kil)
     return BelgeEkleYaniti(belge_id=istek.belge_id, durum="eklendi")
 
 
 @app.get("/search", response_model=AramaYaniti)
 async def ara(request: Request, q: str, limit: int = Query(default=10, gt=0)) -> AramaYaniti:
-    onbellekteki = app.state.cache.getir(q, limit)
+    # DÜZELTME (Faz 10 sonrası performans soruşturması): bu route zaten
+    # `async def`'ti ama cache.getir()/kaydet() DOĞRUDAN (senkron, hiç
+    # to_thread'siz) çağrılıyordu — bu, tek event loop thread'ini Redis
+    # çağrısı süresince BLOKE ediyordu, aynı anda başka HİÇBİR isteğin
+    # işlenmesine izin vermeden. Bu muhtemelen kuyruk birikmesinin asıl
+    # nedeniydi (thread pool çakışmasından daha doğrudan bir açıklama).
+    onbellekteki = await asyncio.to_thread(app.state.cache.getir, q, limit)
     if onbellekteki is not None:
         request.state.cache_hit = True
         request.state.basarisiz_shardlar = []
@@ -150,6 +167,6 @@ async def ara(request: Request, q: str, limit: int = Query(default=10, gt=0)) ->
     request.state.basarisiz_shardlar = sonuc.basarisiz_shardlar
 
     if not yanit.basarisiz_shardlar:
-        app.state.cache.kaydet(q, limit, yanit.model_dump())
+        await asyncio.to_thread(app.state.cache.kaydet, q, limit, yanit.model_dump())
 
     return yanit
