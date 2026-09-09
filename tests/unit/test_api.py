@@ -19,6 +19,7 @@ SADECE bu test dosyasında import ediliyor — `app.py`'deki
 test_fakeredis_izolasyonu.py).
 """
 
+import logging
 import time
 
 import fakeredis
@@ -227,3 +228,54 @@ def test_kismi_basarisiz_sonuc_cachelenmiyor(client: TestClient, monkeypatch) ->
     # cevap" gibi önbelleğe düşmüyor.
     assert sayac["n"] == 1
     assert yanit2.json()["basarisiz_shardlar"] == [ilk_shard_id]
+
+
+def test_arama_istegi_yapilandirilmis_log_uretir(client: TestClient, caplog) -> None:
+    client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
+
+    with caplog.at_level(logging.INFO, logger="shardsearch"):
+        client.get("/search", params={"q": "kedi", "limit": 5})
+
+    arama_kayitlari = [k for k in caplog.records if getattr(k, "endpoint", None) == "/search"]
+    assert len(arama_kayitlari) == 1
+    kayit = arama_kayitlari[0]
+    assert kayit.metod == "GET"
+    assert kayit.durum_kodu == 200
+    assert kayit.sorgu == "kedi"
+    assert kayit.cache_hit is False  # ilk çağrı, cache miss olmalı
+    assert kayit.basarisiz_shardlar == []
+    assert kayit.sure_ms >= 0
+
+
+def test_ikinci_ozdes_arama_logunda_cache_hit_true_gorunur(
+    client: TestClient, caplog
+) -> None:
+    client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
+    client.get("/search", params={"q": "kedi"})  # cache miss, ısındırma
+    caplog.clear()  # caplog.records tüm test boyunca birikiyor, at_level'a göre sıfırlanmıyor
+
+    with caplog.at_level(logging.INFO, logger="shardsearch"):
+        client.get("/search", params={"q": "kedi"})
+
+    arama_kayitlari = [k for k in caplog.records if getattr(k, "endpoint", None) == "/search"]
+    assert len(arama_kayitlari) == 1
+    assert arama_kayitlari[0].cache_hit is True
+
+
+def test_gecersiz_sorgu_logunda_400_durum_kodu_gorunur(client: TestClient, caplog) -> None:
+    with caplog.at_level(logging.INFO, logger="shardsearch"):
+        client.get("/search", params={"q": "kedi köpek"})  # operatörsüz yan yana yazım
+
+    arama_kayitlari = [k for k in caplog.records if getattr(k, "endpoint", None) == "/search"]
+    assert len(arama_kayitlari) == 1
+    assert arama_kayitlari[0].durum_kodu == 400
+
+
+def test_index_istegi_yapilandirilmis_log_uretir(client: TestClient, caplog) -> None:
+    with caplog.at_level(logging.INFO, logger="shardsearch"):
+        client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
+
+    index_kayitlari = [k for k in caplog.records if getattr(k, "endpoint", None) == "/index"]
+    assert len(index_kayitlari) == 1
+    assert index_kayitlari[0].metod == "POST"
+    assert index_kayitlari[0].durum_kodu == 201

@@ -1,4 +1,4 @@
-"""FastAPI sarmalayıcı — Faz 9: cache-aside ile hızlandırılmış dağıtık arama.
+"""FastAPI sarmalayıcı — Faz 10: yapılandırılmış log ile gözlemlenebilirlik.
 
 Akış:
   POST /index -> TutarliHash.shard_bul() ile doğru shard bulunur,
@@ -13,6 +13,12 @@ Akış:
          sonuç cache'e yazılır — bozuk bir shard'ın eksik sonucu kalıcı
          "doğru cevap" gibi önbelleğe düşmesin diye
 
+Her istek, bir middleware tarafından JSON formatında loglanıyor (bkz.
+logging_config.py) — süre, durum kodu, `/search` için ayrıca cache
+hit/miss ve başarısız shard bilgisi. Percentile (p50/p95/p99) metrikleri
+BURADA hesaplanmıyor — bu uygulamanın kendi metrik sistemini kurmak yerine
+Locust'un kendi yük testi raporundan alınıyor (bkz. benchmarks/locustfile.py).
+
 Shard sayısı ve kimlikleri `config/shards.json`'dan (Faz 7) statik olarak
 yükleniyor. Her shard kendi SQLite dosyasında yaşıyor (`data/<shard_id>.db`).
 
@@ -22,15 +28,18 @@ döndürecek şekilde değiştiriyor (bkz. tests/unit/test_api.py) — `fakeredi
 bu dosyada asla import edilmiyor (bkz. test_fakeredis_izolasyonu.py).
 """
 
+import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import redis
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 
 from shardsearch.api.cache import AramaCache
+from shardsearch.api.logging_config import LOGGER_ADI, istek_logla, logging_kur
 from shardsearch.api.semalar import (
     AramaSonucu,
     AramaYaniti,
@@ -45,10 +54,25 @@ from shardsearch.storage import SqliteTersIndeks
 _VARSAYILAN_VERI_DIZINI = "data"
 _VARSAYILAN_REDIS_URL = "redis://localhost:6379/0"
 
+logging_kur()
+_logger = logging.getLogger(LOGGER_ADI)
+
 
 def _redis_istemcisi_olustur() -> redis.Redis:
     redis_url = os.environ.get("SHARDSEARCH_REDIS_URL", _VARSAYILAN_REDIS_URL)
-    return redis.from_url(redis_url, decode_responses=True)
+    # Faz 10'da gerçek yük testinde bulundu: Redis erişilemezse (bağlantı
+    # reddedilirse) redis-py'nin varsayılan davranışı bu ortamda ~4 saniye
+    # sonra ConnectionError fırlatıyor — AramaCache bu hatayı yutuyor
+    # (arama çökmüyor, Faz 9'un tasarımı doğru) ama her istek bu gizli
+    # gecikmeyi ödüyor; /search bir cache-miss'te kuşak+değer+kaydet için
+    # 3 AYRI Redis çağrısı yaptığından (bkz. cache.py) bu üç katına
+    # çıkıyor. Kısa bir socket timeout (üretimde de yaygın bir değer),
+    # "cache erişilemezse hızlıca vazgeç" davranışını GERÇEKTEN hızlı hale
+    # getiriyor — Faz 9'un zaten vaat ettiği "kritik yol değil" ilkesinin
+    # eksik kalan parçası.
+    return redis.from_url(
+        redis_url, decode_responses=True, socket_connect_timeout=0.2, socket_timeout=0.2
+    )
 
 
 @asynccontextmanager
@@ -70,6 +94,30 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="ShardSearch", lifespan=_lifespan)
 
 
+@app.middleware("http")
+async def _log_middleware(request: Request, call_next):
+    baslangic = time.perf_counter()
+    yanit = await call_next(request)
+    sure_ms = (time.perf_counter() - baslangic) * 1000
+
+    ekstra: dict[str, object] = {}
+    if request.url.path == "/search":
+        ekstra["sorgu"] = request.query_params.get("q")
+        ekstra["limit"] = request.query_params.get("limit")
+        ekstra["cache_hit"] = getattr(request.state, "cache_hit", None)
+        ekstra["basarisiz_shardlar"] = getattr(request.state, "basarisiz_shardlar", None)
+
+    istek_logla(
+        _logger,
+        endpoint=request.url.path,
+        metod=request.method,
+        sure_ms=sure_ms,
+        durum_kodu=yanit.status_code,
+        **ekstra,
+    )
+    return yanit
+
+
 @app.post("/index", response_model=BelgeEkleYaniti, status_code=201)
 def belge_ekle(istek: BelgeEkleIstegi) -> BelgeEkleYaniti:
     shard_id = app.state.tutarli_hash.shard_bul(istek.belge_id)
@@ -79,11 +127,14 @@ def belge_ekle(istek: BelgeEkleIstegi) -> BelgeEkleYaniti:
 
 
 @app.get("/search", response_model=AramaYaniti)
-async def ara(q: str, limit: int = Query(default=10, gt=0)) -> AramaYaniti:
+async def ara(request: Request, q: str, limit: int = Query(default=10, gt=0)) -> AramaYaniti:
     onbellekteki = app.state.cache.getir(q, limit)
     if onbellekteki is not None:
+        request.state.cache_hit = True
+        request.state.basarisiz_shardlar = []
         return AramaYaniti(**onbellekteki)
 
+    request.state.cache_hit = False
     try:
         sonuc = await dagitik_ara(app.state.shardlar, q, limit)
     except SorguHatasi as hata:
@@ -96,6 +147,7 @@ async def ara(q: str, limit: int = Query(default=10, gt=0)) -> AramaYaniti:
         sonuclar.append(AramaSonucu(belge_id=belge_id, skor=skor, metin=metin))
 
     yanit = AramaYaniti(sorgu=q, sonuclar=sonuclar, basarisiz_shardlar=sonuc.basarisiz_shardlar)
+    request.state.basarisiz_shardlar = sonuc.basarisiz_shardlar
 
     if not yanit.basarisiz_shardlar:
         app.state.cache.kaydet(q, limit, yanit.model_dump())

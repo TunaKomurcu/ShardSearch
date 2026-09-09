@@ -50,7 +50,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - Redis ile sık tekrarlanan sorguları cache'leme (cache-aside deseni)
 - **Definition of Done:** aynı sorgu ikinci kez ölçülebilir şekilde daha hızlı dönüyor
 
-## Faz 10: Gözlemlenebilirlik + Yük Testi
+## Faz 10: Gözlemlenebilirlik + Yük Testi ✅ (Tamamlandı)
 - Yapılandırılmış log, sorgu süresi metrikleri (p50/p95/p99)
 - Locust ile yük testi
 - **Definition of Done:** Locust raporu + p50/p95/p99 grafiği elde edilmiş

@@ -26,6 +26,12 @@ dev = [
 validation = [
     "rank_bm25>=0.2.2",
 ]
+# SADECE benchmarks/locustfile.py'yi çalıştırmak için gerekli — src/ asla
+# import etmez. Ayrı grupta tutulduğu için normal `uv sync` bunu kurmaz,
+# sadece `uv sync --group loadtest` ile gelir.
+loadtest = [
+    "locust>=2.20",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -40,9 +40,12 @@ ertelendi — şu anki tek-node MVP için gereksizler:
   açıkça yasak. Faz 7'nin shard ataması statik, config dosyasında
   tanımlı olacak.
 - **Connection pool / gerçek eşzamanlılık optimizasyonu** — Faz 6'da
-  SQLite erişimi tek bir `threading.Lock` ile serileştirildi. Bu
-  mantıksal olarak doğru ama performans için optimize değil; gerçek
-  yük altında nasıl davrandığı Faz 10'a (Locust) kadar bilinmiyor.
+  SQLite erişimi tek bir `threading.Lock` ile serileştirildi. Faz 10'da
+  gerçek Locust yük testiyle ölçüldü: eşzamanlı yük altında ciddi bir
+  gecikme büyümesi VAR, ama izole testler bunun bu `threading.Lock`'tan
+  KAYNAKLANMADIĞINI gösterdi (bkz. `docs/known-limitations.md`) — asıl
+  kök neden bu ortama özgü Redis-erişilemez senaryosuyla ilgili görünüyor,
+  kesin olarak izole edilemedi.
 - **Kimlik doğrulama, çoklu-kiracılık, rate limiting** — SPEC.md'de
   "bu bir teknik demo, prod SaaS değil" diye açıkça kapsam dışı.
 - **Kendi B-tree/LSM-tree, kendi HNSW, gelişmiş Türkçe morfoloji** —
