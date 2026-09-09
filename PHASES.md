@@ -46,7 +46,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - **Test:** dağıtık sonuç ile tek-node sonucu karşılaştırması — IDF farkından kaynaklanan sapmalar açıklanabilir mi
 - **Definition of Done:** 3 shard'lı dağıtık arama, tek-node sonucuyla tutarlı sonuç veriyor
 
-## Faz 9: Cache Katmanı
+## Faz 9: Cache Katmanı ✅ (Tamamlandı)
 - Redis ile sık tekrarlanan sorguları cache'leme (cache-aside deseni)
 - **Definition of Done:** aynı sorgu ikinci kez ölçülebilir şekilde daha hızlı dönüyor
 

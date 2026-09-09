@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
+    "redis>=5.0",
 ]
 
 [dependency-groups]
@@ -14,6 +15,10 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "httpx>=0.27",
+    # Ortamda gerçek Redis/Docker/WSL yok (bkz. docs/known-limitations.md) —
+    # testlerde ve bu oturumdaki geliştirmede gerçek Redis yerine kullanılıyor.
+    # src/ asla import etmez (bkz. test_fakeredis_izolasyonu.py).
+    "fakeredis>=2.20",
 ]
 # SADECE tests/validation/ içinde referans olarak kullanılır — src/ asla
 # import etmez (bkz. tests/validation/test_rank_bm25_izolasyonu.py).
