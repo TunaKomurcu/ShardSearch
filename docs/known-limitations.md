@@ -62,3 +62,16 @@
   gerçek Redis'le tamamen kaybolacaktır, değilse (asıl endişe konusu olan
   Starlette/asyncio thread pool etkileşimiyse) o zaman gerçek bir
   mimari inceleme gerekecektir.
+
+  **Somut sonraki adım (ipucu kaybolmasın diye):** `GET /search` route'u
+  şu an zaten `async def` (bkz. `app.py`) ama içindeki `dagitik_ara()`
+  her shard için ayrı bir `asyncio.to_thread()` çağrısı yapıyor — bunun
+  kullandığı varsayılan `asyncio` executor'ı ile Starlette'in `POST
+  /index` gibi SENKRON (`def`) route'lar için kullandığı ayrı anyio
+  thread pool'unun bu ortamda birbiriyle nasıl etkileştiğini test etmek
+  gerekiyor. Denenecek somut deney: `/index`'i de `async def`'e çevirip
+  (SqliteTersIndeks çağrısını `asyncio.to_thread` ile sarmalayarak) TEK
+  bir thread pool mekanizmasına indirmek, aynı Locust senaryosunu tekrar
+  koşup gecikme büyüme paterninin (450ms → 25sn) azalıp azalmadığını
+  ölçmek — bu, iki ayrı thread pool'un çakışmasının gerçek neden olup
+  olmadığını doğrudan test eder.
