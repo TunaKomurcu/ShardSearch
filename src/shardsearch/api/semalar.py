@@ -26,6 +26,10 @@ class AramaSonucu(BaseModel):
 class AramaYaniti(BaseModel):
     sorgu: str
     sonuclar: list[AramaSonucu]
+    # Faz 8: bir veya daha fazla shard sorgu sırasında hata verirse burada
+    # AÇIKÇA listelenir — sessiz veri kaybı yerine, "eksik ama neden eksik
+    # olduğu bilinen" kısmi bir sonuç. Boş liste = tüm shard'lar cevap verdi.
+    basarisiz_shardlar: list[str] = []
 
 
 class HataYaniti(BaseModel):

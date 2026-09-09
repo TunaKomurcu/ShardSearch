@@ -1,11 +1,14 @@
-"""Faz 6 testleri: FastAPI uçtan uca — HTTP isteğiyle indeksleme ve arama.
+"""Faz 6/8 testleri: FastAPI uçtan uca — HTTP isteğiyle indeksleme ve arama.
 
 TestClient, ASGI üzerinden gerçek route/dependency/lifespan akışını
 çalıştırır (mock yok) — sadece gerçek bir TCP soketi açmıyor. Gerçek
 soket üzerinden (uvicorn + curl) doğrulama ayrıca elle yapıldı (bkz. Faz
 6 özeti).
 
-Her test kendi geçici SQLite dosyasını kullanır (SHARDSEARCH_DB_PATH env
+Faz 8'den itibaren `app`, `config/shards.json`'daki TÜM shard'ları
+kullanıyor (tek dosya değil) — bu testler hangi belgenin hangi shard'a
+düştüğünü bilerek varsaymıyor, sadece uçtan uca doğru sonucu doğruluyor.
+Her test kendi geçici veri dizinini kullanır (SHARDSEARCH_DATA_DIR env
 değişkeni ile) — testler birbirinin verisini görmesin diye.
 """
 
@@ -17,13 +20,12 @@ from shardsearch.api.app import app
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    # _lifespan(), SHARDSEARCH_DB_PATH'i her `with TestClient(...)` bloğuna
-    # girişte (yani her testte) yeniden okuyup app.state.indeks'i baştan
+    # _lifespan(), SHARDSEARCH_DATA_DIR'i her `with TestClient(...)` bloğuna
+    # girişte (yani her testte) yeniden okuyup app.state.shardlar'ı baştan
     # kuruyor — bu yüzden testler arasında modülü yeniden import etmeye
     # gerek yok, sadece env değişkenini context'e girmeden önce ayarlamak
-    # yeterli, her test kendi geçici DB dosyasıyla izole çalışır.
-    veritabani_yolu = tmp_path / "test_api.db"
-    monkeypatch.setenv("SHARDSEARCH_DB_PATH", str(veritabani_yolu))
+    # yeterli, her test kendi geçici veri diziniyle izole çalışır.
+    monkeypatch.setenv("SHARDSEARCH_DATA_DIR", str(tmp_path))
 
     with TestClient(app) as test_client:
         yield test_client

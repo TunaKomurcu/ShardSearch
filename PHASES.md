@@ -41,7 +41,7 @@ Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" krit
 - **Test:** belgeler shard'lara dengeli dağılıyor mu (dağılım istatistiği); shard sayısı değişince (resharding) minimum veri yer değiştiriyor mu
 - **Definition of Done:** N shard'a dağıtılmış veri, hangi shard'da olduğu doğru şekilde bulunabiliyor
 
-## Faz 8: Dağıtık Sorgu (Fan-out + Birleştirme)
+## Faz 8: Dağıtık Sorgu (Fan-out + Birleştirme) ✅ (Tamamlandı)
 - asyncio ile paralel shard sorgulama, sonuçları birleştirip global sıralama
 - **Test:** dağıtık sonuç ile tek-node sonucu karşılaştırması — IDF farkından kaynaklanan sapmalar açıklanabilir mi
 - **Definition of Done:** 3 shard'lı dağıtık arama, tek-node sonucuyla tutarlı sonuç veriyor
