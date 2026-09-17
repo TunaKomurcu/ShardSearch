@@ -1,33 +1,33 @@
-"""Sorgu ayrıştırma ağacının düğümleri.
+"""Nodes of the query parse tree.
 
-Ortak bir taban sınıf tanımlanmadı — dört düğüm türü de birbirinden
-bağımsız `dataclass`'lar, `degerlendirici.py`'de `isinstance` ile ayırt
-ediliyor. Dört düğüm için soyutlama gerektirecek ortak bir davranış yok.
+No common base class is defined — the four node types are independent
+`dataclass`es, distinguished with `isinstance` in evaluator.py. There is
+no shared behavior across the four that would justify an abstraction.
 """
 
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class Terim:
-    kelime: str
+class Term:
+    word: str
 
 
 @dataclass(frozen=True)
-class Ifade:
-    kelimeler: tuple[str, ...]
+class Phrase:
+    words: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class Ve:
-    sol: "SorguDugumu"
-    sag: "SorguDugumu"
+class And:
+    left: "QueryNode"
+    right: "QueryNode"
 
 
 @dataclass(frozen=True)
-class Veya:
-    sol: "SorguDugumu"
-    sag: "SorguDugumu"
+class Or:
+    left: "QueryNode"
+    right: "QueryNode"
 
 
-SorguDugumu = Terim | Ifade | Ve | Veya
+QueryNode = Term | Phrase | And | Or

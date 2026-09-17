@@ -1,69 +1,93 @@
-# PHASES.md — Aşama Aşama Yol Haritası
+# PHASES.md — Phase-by-Phase Roadmap
 
-Her faz, bir öncekinin üzerine inşa edilir. Bir faz "Definition of Done" kriterini karşılamadan bir sonrakine geçilmez.
+Each phase builds on the previous one. A phase's "Definition of Done" had
+to be met before moving to the next.
 
-## Faz 0: Kurulum ✅ (Tamamlandı)
-- Proje iskeleti (`src/`, `tests/`, `benchmarks/`, `docs/` klasörleri)
-- Bağımlılık yönetimi kurulumu (uv veya poetry)
-- pytest, ruff/black kurulumu
-- **Definition of Done:** `pytest` (boş test seti olsa bile) hatasız çalışıyor, `git init` yapılmış
+## Phase 0: Setup ✅ (Done)
+- Project skeleton (`src/`, `tests/`, `benchmarks/`, `docs/` directories)
+- Dependency management setup (uv)
+- pytest, ruff setup
+- **Definition of Done:** `pytest` runs cleanly (even with an empty test
+  suite), `git init` done
 
-## Faz 1: Tokenizer ✅ (Tamamlandı)
-- Metni token'lara ayırma, küçük harfe çevirme (Türkçe İ/ı farkındalığıyla — `.lower()` Türkçe'de hatalı sonuç verir, bunu bilerek çöz), noktalama/sayı temizleme
-- **Test:** en az 10 farklı Türkçe cümle + edge case'ler (büyük İ, apostroflu kelimeler — "Türkiye'nin", sayı içeren metin)
-- **Definition of Done:** tüm test cümleleri beklenen token listesini üretiyor
+## Phase 1: Tokenizer ✅ (Done)
+- Splitting text into tokens, lowercasing (with Turkish İ/ı awareness —
+  `.lower()` gets this wrong in Turkish, handled deliberately), stripping
+  punctuation/digits
+- **Test:** at least 10 different Turkish sentences + edge cases
+  (uppercase İ, apostrophe words — "Türkiye'nin", text containing digits)
+- **Definition of Done:** every test sentence produces the expected token
+  list
 
-## Faz 2: Ters İndeks (bellek içi) ✅ (Tamamlandı)
-- `token → [(belge_id, frekans, [pozisyonlar])]` veri yapısı
-- **Test:** küçük bir test korpusunda (10-20 cümle), bilinen bir kelimenin doğru belgelerde, doğru frekansla bulunması
-- **Definition of Done:** postings listesi manuel hesaplanan beklenen değerle birebir eşleşiyor
+## Phase 2: Inverted Index (in-memory) ✅ (Done)
+- `token → [(doc_id, frequency, [positions])]` data structure
+- **Test:** on a small test corpus (10-20 sentences), a known word is
+  found in the right documents with the right frequency
+- **Definition of Done:** the postings list matches a hand-computed
+  expected value exactly
 
-## Faz 3: BM25 Skorlama ✅ (Tamamlandı)
-- TF, IDF, belge uzunluğu normalizasyonu — formülün her parçası ayrı fonksiyon, ayrı test
-- **Doğrulama:** aynı korpusta `rank_bm25` (sadece `tests/validation/`'da) ile üretilen skorlarla karşılaştırma
-- **Definition of Done:** kendi skorlarımızın sıralaması, referans kütüphaneninkiyle yüksek korelasyon gösteriyor (ilk 5 sonuç aynı sırada, ya da fark açıklanabilir)
+## Phase 3: BM25 Scoring ✅ (Done)
+- TF, IDF, document length normalization — each part of the formula its
+  own function, its own test
+- **Validation:** compare scores on the same corpus against `rank_bm25`
+  (used only in `tests/validation/`)
+- **Definition of Done:** our own ranking shows strong correlation with
+  the reference library's (top 5 results in the same order, or an
+  explainable difference)
 
-## Faz 4: Kalıcı Depolama (SQLite) ✅ (Tamamlandı)
-- Ters indeksi SQLite'a yazma/okuma katmanı
-- **Definition of Done:** uygulama kapanıp yeniden başlatıldığında indeks kayboluyor, bellekten değil diskten yükleniyor
+## Phase 4: Persistent Storage (SQLite) ✅ (Done)
+- A read/write layer persisting the inverted index to SQLite
+- **Definition of Done:** the index survives an application restart,
+  loaded from disk rather than memory
 
-## Faz 5: Sorgu Ayrıştırıcı ✅ (Tamamlandı)
-- `AND`/`OR` boolean mantık, `"ifade eşleştirme"` (phrase, pozisyon bilgisini kullanarak)
-- **Test:** operatör önceliği açıkça test ediliyor (`a AND b OR c` — hangi sırayla değerlendiriliyor)
-- **Definition of Done:** karmaşık bir sorgu string'i doğru ayrıştırma ağacına çevriliyor
+## Phase 5: Query Parser ✅ (Done)
+- `AND`/`OR` boolean logic, `"phrase matching"` (using position
+  information)
+- **Test:** operator precedence is explicitly tested (`a AND b OR c` —
+  which order is it evaluated in)
+- **Definition of Done:** a complex query string parses into the correct
+  parse tree
 
-## Faz 6: FastAPI Sarmalayıcı — İLK ÇALIŞAN MVP ✅ (Tamamlandı)
-- `POST /index` (belge ekleme), `GET /search` (arama) endpoint'leri
-- **Definition of Done:** gerçek bir HTTP isteğiyle uçtan uca, tek-node arama çalışıyor — bu noktada "çalışan bir ürün" var
+## Phase 6: FastAPI Wrapper — FIRST WORKING MVP ✅ (Done)
+- `POST /index` (add document), `GET /search` (search) endpoints
+- **Definition of Done:** end-to-end, single-node search works over a
+  real HTTP request — a "working product" exists at this point
 
-## Faz 7: Sharding ✅ (Tamamlandı)
-- Consistent hashing ile belge dağıtımı (hatırlarsan hash tablosu/sharding dersi)
-- **Test:** belgeler shard'lara dengeli dağılıyor mu (dağılım istatistiği); shard sayısı değişince (resharding) minimum veri yer değiştiriyor mu
-- **Definition of Done:** N shard'a dağıtılmış veri, hangi shard'da olduğu doğru şekilde bulunabiliyor
+## Phase 7: Sharding ✅ (Done)
+- Document distribution via consistent hashing
+- **Test:** are documents evenly distributed across shards (distribution
+  stats); does changing the shard count (resharding) move a minimal
+  amount of data
+- **Definition of Done:** data distributed across N shards can be
+  correctly located by shard
 
-## Faz 8: Dağıtık Sorgu (Fan-out + Birleştirme) ✅ (Tamamlandı)
-- asyncio ile paralel shard sorgulama, sonuçları birleştirip global sıralama
-- **Test:** dağıtık sonuç ile tek-node sonucu karşılaştırması — IDF farkından kaynaklanan sapmalar açıklanabilir mi
-- **Definition of Done:** 3 shard'lı dağıtık arama, tek-node sonucuyla tutarlı sonuç veriyor
+## Phase 8: Distributed Query (Fan-out + Merge) ✅ (Done)
+- Parallel shard querying via asyncio, results merged and globally
+  ranked
+- **Test:** comparing distributed results against single-node results —
+  are deviations caused by IDF differences explainable
+- **Definition of Done:** distributed search across 3 shards produces
+  results consistent with single-node search
 
-## Faz 9: Cache Katmanı ✅ (Tamamlandı)
-- Redis ile sık tekrarlanan sorguları cache'leme (cache-aside deseni)
-- **Definition of Done:** aynı sorgu ikinci kez ölçülebilir şekilde daha hızlı dönüyor
+## Phase 9: Cache Layer ✅ (Done)
+- Caching frequent queries with Redis (cache-aside pattern)
+- **Definition of Done:** the same query returns measurably faster the
+  second time
 
-## Faz 10: Gözlemlenebilirlik + Yük Testi ✅ (Tamamlandı)
-- Yapılandırılmış log, sorgu süresi metrikleri (p50/p95/p99)
-- Locust ile yük testi
-- **Definition of Done:** Locust raporu + p50/p95/p99 grafiği elde edilmiş
+## Phase 10: Observability + Load Testing ✅ (Done)
+- Structured logging, query duration metrics (p50/p95/p99)
+- Load testing with Locust
+- **Definition of Done:** a Locust report + p50/p95/p99 chart obtained
 
-## Faz 11 (Stretch — opsiyonel, zaman kalırsa)
-- Zemberek ile gelişmiş Türkçe stemming
-- `hnswlib`/`faiss` ile hibrit (BM25 + semantik) arama
-- Dockerize etme, basit CI/CD kurulumu
+## Phase 11 (Stretch — optional, time permitting)
+- Advanced Turkish stemming with Zemberek
+- Hybrid (BM25 + semantic) search with `hnswlib`/`faiss`
+- Dockerizing, basic CI/CD setup
 
 ---
 
-## Her Faz Sonunda Beklenen Çıktı
+## Expected Output at the End of Each Phase
 
-1. Çalışan, test edilmiş kod
-2. Kısa bir özet: bu fazda hangi tasarım kararları alındı, neden
-3. `PHASES.md`'de ilgili maddenin işaretlenmesi
+1. Working, tested code
+2. A short summary: which design decisions were made in this phase, and why
+3. The corresponding item checked off in `PHASES.md`

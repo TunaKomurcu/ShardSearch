@@ -1,26 +1,27 @@
-"""Faz 9: Redis ile cache-aside deseni.
+"""Cache-aside pattern backed by Redis.
 
-Redis, SPEC.md'de "hazır araç kullan" olarak işaretli (cache mekanizması
-ayrı bir derste zaten işlendi, sıfırdan yazılmayacak) — burada sadece
-redis-py istemcisi kullanılıyor, Redis'in kendisi sıfırdan yazılmıyor.
+Redis is marked "use an off-the-shelf tool" in SPEC.md (caching mechanics
+were already covered in a separate course, no need to build them from
+scratch here) — this file only uses the redis-py client, Redis itself is
+never reimplemented.
 
-Cache anahtarı NEDEN bir "kuşak" (generation) sayacı içeriyor: BM25'in
-IDF'i ve ortalama belge uzunluğu TÜM korpusa bağlı istatistiklerdir —
-yeni bir belge eklendiğinde, o belgeyle hiç ilgisi olmayan bir sorgunun
-bile skorları teorik olarak değişebilir (global N ve avgdl değişti). Bu
-yüzden "hangi cache girdileri bu yeni belgeden etkilendi" sorusunun kesin
-bir cevabı yok — pratikte TÜM cache'i geçersiz kılmak gerekiyor. Bunu tek
-tek anahtar silerek (Redis'in KEYS/SCAN komutlarıyla, O(n) ve prod'da
-riskli — tüm anahtar uzayını tarar) yapmak yerine, bir kuşak sayacı
-kullanıyoruz: her yazmada bu sayaç 1 artırılır ve cache anahtarına dahil
-edilir. Sayaç değişince eski anahtarlar otomatik "görünmez" olur (bir
-daha hiç okunmaz), TTL ile zamanla kendiliğinden silinirler. O(1) bir
-invalidation — tek bir INCR.
+Why the cache key includes a "generation" counter: BM25's IDF and average
+document length are statistics over the ENTIRE corpus — adding a single
+new document can, in theory, change the score of a query totally unrelated
+to that document (global N and avgdl changed). So there's no precise
+answer to "which cache entries were affected by this new document" — in
+practice, the whole cache needs to be invalidated. Rather than deleting
+keys one by one (via Redis's KEYS/SCAN, which is O(n) and risky in
+production since it scans the entire keyspace), a generation counter is
+used: it's incremented by 1 on every write and folded into the cache key.
+Once the counter changes, old keys become invisible automatically (never
+read again) and expire on their own via TTL. An O(1) invalidation — a
+single INCR.
 
-Redis ERİŞİLEMEZSE arama ÇÖKMEMELİ: cache bir optimizasyon, kritik yol
-değil. Bu yüzden tüm Redis çağrıları RedisError'ı yakalayıp yutuyor —
-çağıran taraf (app.py) her zaman "cache yok" (None / no-op) muamelesi
-görür, asla bir istisna sızmaz.
+If Redis is UNREACHABLE, search must NOT crash: the cache is an
+optimization, not on the critical path. So every Redis call catches and
+swallows RedisError — the caller (app.py) always sees "no cache" (None /
+no-op), never a leaking exception.
 """
 
 import json
@@ -28,44 +29,44 @@ from typing import Any
 
 import redis
 
-_TTL_SANIYE = 300  # DoD "ölçülebilir hızlanma" için yeterli; uzun tutmaya gerek yok
-_KUSAK_ANAHTARI = "arama:kusak"
+_TTL_SECONDS = 300  # enough for a "measurably faster" DoD; no need to keep it longer
+_GENERATION_KEY = "search:generation"
 
 
-class AramaCache:
-    def __init__(self, redis_istemcisi: redis.Redis) -> None:
-        self._redis = redis_istemcisi
+class SearchCache:
+    def __init__(self, redis_client: redis.Redis) -> None:
+        self._redis = redis_client
 
-    def _kusak(self) -> int:
+    def _generation(self) -> int:
         try:
-            deger = self._redis.get(_KUSAK_ANAHTARI)
+            value = self._redis.get(_GENERATION_KEY)
         except redis.exceptions.RedisError:
             return 0
-        return int(deger) if deger is not None else 0
+        return int(value) if value is not None else 0
 
-    def _anahtar(self, sorgu: str, limit: int) -> str:
-        return f"arama:v{self._kusak()}:{sorgu}:{limit}"
+    def _key(self, query: str, limit: int) -> str:
+        return f"search:v{self._generation()}:{query}:{limit}"
 
-    def getir(self, sorgu: str, limit: int) -> dict[str, Any] | None:
+    def get(self, query: str, limit: int) -> dict[str, Any] | None:
         try:
-            ham = self._redis.get(self._anahtar(sorgu, limit))
+            raw = self._redis.get(self._key(query, limit))
         except redis.exceptions.RedisError:
             return None
-        if ham is None:
+        if raw is None:
             return None
-        return json.loads(ham)
+        return json.loads(raw)
 
-    def kaydet(self, sorgu: str, limit: int, sonuc: dict[str, Any]) -> None:
+    def set(self, query: str, limit: int, result: dict[str, Any]) -> None:
         try:
-            self._redis.set(self._anahtar(sorgu, limit), json.dumps(sonuc), ex=_TTL_SANIYE)
+            self._redis.set(self._key(query, limit), json.dumps(result), ex=_TTL_SECONDS)
         except redis.exceptions.RedisError:
             pass
 
-    def gecersiz_kil(self) -> None:
-        """Yeni bir belge eklendiğinde çağrılır — kuşak sayacını artırarak
-        TÜM önceki cache girdilerini tek seferde (O(1)) geçersiz kılar.
+    def invalidate(self) -> None:
+        """Called when a new document is indexed — bumps the generation
+        counter, invalidating ALL previous cache entries in one O(1) step.
         """
         try:
-            self._redis.incr(_KUSAK_ANAHTARI)
+            self._redis.incr(_GENERATION_KEY)
         except redis.exceptions.RedisError:
             pass

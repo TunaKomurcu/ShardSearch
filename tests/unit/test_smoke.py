@@ -1,10 +1,10 @@
-"""Faz 0 doğrulaması: proje iskeleti kurulu ve pytest çalışıyor.
+"""Phase 0 sanity check: the project skeleton is set up and pytest runs.
 
-Gerçek testler Faz 1'den itibaren gelecek (tokenizer, ters indeks, vb.).
+Real tests start from Phase 1 onward (tokenizer, inverted index, etc.).
 """
 
 import shardsearch
 
 
-def test_paket_import_edilebiliyor() -> None:
+def test_package_is_importable() -> None:
     assert shardsearch is not None

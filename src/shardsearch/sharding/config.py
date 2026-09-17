@@ -1,17 +1,16 @@
-"""Shard listesinin statik, config-dosyası tabanlı yüklenmesi.
+"""Static, config-file-based loading of the shard list.
 
-CLAUDE.md'nin yasak listesi gereği shard ataması Raft/Paxos/etcd gibi
-dinamik bir cluster coordination aracıyla değil, düz bir config dosyasıyla
-tanımlanıyor. Faz 8'de gerçek per-shard depolamaya bağlanana kadar bu
-liste sadece TutarliHash'i kurmak için kullanılıyor.
+Per SPEC.md's scope, shard assignment is defined by a plain config file
+rather than a dynamic cluster coordination tool like Raft/Paxos/etcd.
+This list is used only to build a ConsistentHash instance.
 """
 
 import json
 from pathlib import Path
 
-_VARSAYILAN_CONFIG_YOLU = Path(__file__).resolve().parents[3] / "config" / "shards.json"
+_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "shards.json"
 
 
-def shardlari_yukle(yol: str | Path = _VARSAYILAN_CONFIG_YOLU) -> list[str]:
-    icerik = json.loads(Path(yol).read_text(encoding="utf-8"))
-    return icerik["shardlar"]
+def load_shards(path: str | Path = _DEFAULT_CONFIG_PATH) -> list[str]:
+    content = json.loads(Path(path).read_text(encoding="utf-8"))
+    return content["shards"]

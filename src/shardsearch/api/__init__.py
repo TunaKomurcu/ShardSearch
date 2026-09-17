@@ -1,7 +1,7 @@
-# Bilerek boş: `app`'ı burada `shardsearch.api.app`'tan tekrar export
-# etmeyin. Alt-modülün adı da "app" olduğu için, `from shardsearch.api.app
-# import app` bu paketin `app` ATTRIBUTE'unu (FastAPI nesnesi) alt-modülün
-# kendisinin üzerine yazar — dotted-path attribute çözümlemesi (ör.
-# pytest'in monkeypatch.setattr(str) tarafı) o zaman modül yerine FastAPI
-# nesnesini bulur. `from shardsearch.api.app import app` her zaman
-# doğrudan alt-modülden import edin.
+# Deliberately empty: do not re-export `app` from `shardsearch.api.app`
+# here. Since the submodule is also named "app", `from shardsearch.api.app
+# import app` would overwrite this package's `app` ATTRIBUTE (the FastAPI
+# object) on top of the submodule itself — dotted-path attribute
+# resolution (e.g. pytest's monkeypatch.setattr(str)) would then find the
+# FastAPI object instead of the module. Always
+# `from shardsearch.api.app import app` directly from the submodule.

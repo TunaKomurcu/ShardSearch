@@ -1,3 +1,3 @@
-from shardsearch.distributed.fan_out import DagitikSonuc, dagitik_ara
+from shardsearch.distributed.fan_out import DistributedResult, distributed_search
 
-__all__ = ["DagitikSonuc", "dagitik_ara"]
+__all__ = ["DistributedResult", "distributed_search"]

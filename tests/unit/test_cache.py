@@ -1,57 +1,56 @@
-"""Faz 9 testleri: AramaCache doğrudan fakeredis'e karşı.
+"""Phase 9 tests: SearchCache directly against fakeredis.
 
-redis-py ve fakeredis aynı API yüzeyini paylaştığı için AramaCache
-kodunun kendisi hiçbir zaman fakeredis'e özel bir şey bilmiyor —
-gerçek Redis'e karşı da birebir aynı şekilde çalışır (bkz. app.py'nin
-docstring'i, henüz gerçek Redis'e karşı doğrulanmadı — bkz.
-docs/known-limitations.md).
+Since redis-py and fakeredis share the same API surface, SearchCache's
+code never knows anything fakeredis-specific — it works identically
+against a real Redis (see app.py's docstring; not yet verified against a
+real Redis, see docs/known-limitations.md).
 """
 
 import fakeredis
 import pytest
 
-from shardsearch.api.cache import AramaCache
+from shardsearch.api.cache import SearchCache
 
 
 @pytest.fixture
-def cache() -> AramaCache:
-    return AramaCache(fakeredis.FakeRedis(decode_responses=True))
+def cache() -> SearchCache:
+    return SearchCache(fakeredis.FakeRedis(decode_responses=True))
 
 
-def test_olmayan_anahtar_none_doner(cache: AramaCache) -> None:
-    assert cache.getir("kedi", 10) is None
+def test_missing_key_returns_none(cache: SearchCache) -> None:
+    assert cache.get("kedi", 10) is None
 
 
-def test_kaydedilen_deger_geri_okunur(cache: AramaCache) -> None:
-    cache.kaydet("kedi", 10, {"sorgu": "kedi", "sonuclar": []})
-    assert cache.getir("kedi", 10) == {"sorgu": "kedi", "sonuclar": []}
+def test_a_stored_value_is_read_back(cache: SearchCache) -> None:
+    cache.set("kedi", 10, {"query": "kedi", "results": []})
+    assert cache.get("kedi", 10) == {"query": "kedi", "results": []}
 
 
-def test_farkli_limit_farkli_anahtar_demektir(cache: AramaCache) -> None:
-    cache.kaydet("kedi", 10, {"sorgu": "kedi", "sonuclar": ["a"]})
-    assert cache.getir("kedi", 5) is None
+def test_a_different_limit_means_a_different_key(cache: SearchCache) -> None:
+    cache.set("kedi", 10, {"query": "kedi", "results": ["a"]})
+    assert cache.get("kedi", 5) is None
 
 
-def test_gecersiz_kil_eski_anahtari_gorunmez_yapar(cache: AramaCache) -> None:
-    cache.kaydet("kedi", 10, {"sorgu": "kedi", "sonuclar": ["a"]})
-    assert cache.getir("kedi", 10) is not None
+def test_invalidate_makes_the_old_key_invisible(cache: SearchCache) -> None:
+    cache.set("kedi", 10, {"query": "kedi", "results": ["a"]})
+    assert cache.get("kedi", 10) is not None
 
-    cache.gecersiz_kil()
+    cache.invalidate()
 
-    assert cache.getir("kedi", 10) is None
-
-
-def test_gecersiz_kil_sadece_o_ana_kadarki_yazilanlari_etkiler() -> None:
-    cache = AramaCache(fakeredis.FakeRedis(decode_responses=True))
-    cache.kaydet("eski", 10, {"sorgu": "eski", "sonuclar": []})
-    cache.gecersiz_kil()
-    cache.kaydet("yeni", 10, {"sorgu": "yeni", "sonuclar": []})
-
-    assert cache.getir("eski", 10) is None
-    assert cache.getir("yeni", 10) is not None
+    assert cache.get("kedi", 10) is None
 
 
-def test_ttl_ayarlanir(cache: AramaCache) -> None:
-    cache.kaydet("kedi", 10, {"sorgu": "kedi", "sonuclar": []})
-    ttl = cache._redis.ttl(cache._anahtar("kedi", 10))
+def test_invalidate_only_affects_entries_written_before_it() -> None:
+    cache = SearchCache(fakeredis.FakeRedis(decode_responses=True))
+    cache.set("old", 10, {"query": "old", "results": []})
+    cache.invalidate()
+    cache.set("new", 10, {"query": "new", "results": []})
+
+    assert cache.get("old", 10) is None
+    assert cache.get("new", 10) is not None
+
+
+def test_ttl_is_set(cache: SearchCache) -> None:
+    cache.set("kedi", 10, {"query": "kedi", "results": []})
+    ttl = cache._redis.ttl(cache._key("kedi", 10))
     assert 0 < ttl <= 300

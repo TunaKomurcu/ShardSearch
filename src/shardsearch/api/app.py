@@ -1,31 +1,35 @@
-"""FastAPI sarmalayıcı — Faz 10: yapılandırılmış log ile gözlemlenebilirlik.
+"""FastAPI wrapper — with structured-log observability.
 
-Akış:
-  POST /index -> TutarliHash.shard_bul() ile doğru shard bulunur,
-                 sadece o shard'ın SqliteTersIndeks'ine yazılır, sonra
-                 AramaCache.gecersiz_kil() ile TÜM arama cache'i geçersiz
-                 kılınır (bkz. cache.py'deki "kuşak sayacı" açıklaması).
+Flow:
+  POST /index -> ConsistentHash.find_shard() locates the right shard,
+                 only that shard's SqliteInvertedIndex is written to,
+                 then SearchCache.invalidate() invalidates the ENTIRE
+                 search cache (see the "generation counter" note in
+                 cache.py).
   GET  /search?q=...
-      -> önce AramaCache.getir() ile cache kontrol edilir
-      -> cache miss ise dagitik_ara(): tüm shard'lara paralel
-         (asyncio.to_thread) sorgu, sonuçlar global olarak birleştirilir
-      -> SADECE tüm shard'lar başarılıysa (basarisiz_shardlar boşsa)
-         sonuç cache'e yazılır — bozuk bir shard'ın eksik sonucu kalıcı
-         "doğru cevap" gibi önbelleğe düşmesin diye
+      -> SearchCache.get() is checked first
+      -> on a cache miss, distributed_search(): a parallel query
+         (asyncio.to_thread) to every shard, results merged globally
+      -> the result is only written to the cache if ALL shards
+         succeeded (failed_shards is empty) — so a broken shard's
+         incomplete result never gets cached as if it were the
+         permanent "correct answer"
 
-Her istek, bir middleware tarafından JSON formatında loglanıyor (bkz.
-logging_config.py) — süre, durum kodu, `/search` için ayrıca cache
-hit/miss ve başarısız shard bilgisi. Percentile (p50/p95/p99) metrikleri
-BURADA hesaplanmıyor — bu uygulamanın kendi metrik sistemini kurmak yerine
-Locust'un kendi yük testi raporundan alınıyor (bkz. benchmarks/locustfile.py).
+Every request is logged in JSON by a middleware (see logging_config.py)
+— duration, status code, and for `/search` also cache hit/miss and any
+failed-shard information. Percentile (p50/p95/p99) metrics are NOT
+computed here — rather than build a metrics system into the app itself,
+those come from Locust's own load-test report (see
+benchmarks/locustfile.py).
 
-Shard sayısı ve kimlikleri `config/shards.json`'dan (Faz 7) statik olarak
-yükleniyor. Her shard kendi SQLite dosyasında yaşıyor (`data/<shard_id>.db`).
+The number and identity of shards are loaded statically from
+`config/shards.json`. Each shard lives in its own SQLite file
+(`data/<shard_id>.db`).
 
-`_redis_istemcisi_olustur()` bilerek ayrı bir fonksiyon: testler gerçek
-Redis'e bağlanmak yerine bunu `monkeypatch` ile `fakeredis.FakeRedis`
-döndürecek şekilde değiştiriyor (bkz. tests/unit/test_api.py) — `fakeredis`
-bu dosyada asla import edilmiyor (bkz. test_fakeredis_izolasyonu.py).
+`_create_redis_client()` is deliberately its own function: tests replace
+it with `monkeypatch` to return a `fakeredis.FakeRedis` instead of
+connecting to a real Redis (see tests/unit/test_api.py) — `fakeredis` is
+never imported in this file (see tests/unit/test_fakeredis_isolation.py).
 """
 
 import asyncio
@@ -39,38 +43,38 @@ from pathlib import Path
 import redis
 from fastapi import FastAPI, HTTPException, Query, Request
 
-from shardsearch.api.cache import AramaCache
-from shardsearch.api.logging_config import LOGGER_ADI, istek_logla, logging_kur
-from shardsearch.api.semalar import (
-    AramaSonucu,
-    AramaYaniti,
-    BelgeEkleIstegi,
-    BelgeEkleYaniti,
+from shardsearch.api.cache import SearchCache
+from shardsearch.api.logging_config import LOGGER_NAME, log_request, setup_logging
+from shardsearch.api.schemas import (
+    AddDocumentRequest,
+    AddDocumentResponse,
+    SearchResponse,
+    SearchResult,
 )
-from shardsearch.distributed import dagitik_ara
-from shardsearch.query import SorguHatasi
-from shardsearch.sharding import TutarliHash, shardlari_yukle
-from shardsearch.storage import SqliteTersIndeks
+from shardsearch.distributed import distributed_search
+from shardsearch.query import QueryError
+from shardsearch.sharding import ConsistentHash, load_shards
+from shardsearch.storage import SqliteInvertedIndex
 
-_VARSAYILAN_VERI_DIZINI = "data"
-_VARSAYILAN_REDIS_URL = "redis://localhost:6379/0"
+_DEFAULT_DATA_DIR = "data"
+_DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 
-logging_kur()
-_logger = logging.getLogger(LOGGER_ADI)
+setup_logging()
+_logger = logging.getLogger(LOGGER_NAME)
 
 
-def _redis_istemcisi_olustur() -> redis.Redis:
-    redis_url = os.environ.get("SHARDSEARCH_REDIS_URL", _VARSAYILAN_REDIS_URL)
-    # Faz 10'da gerçek yük testinde bulundu: Redis erişilemezse (bağlantı
-    # reddedilirse) redis-py'nin varsayılan davranışı bu ortamda ~4 saniye
-    # sonra ConnectionError fırlatıyor — AramaCache bu hatayı yutuyor
-    # (arama çökmüyor, Faz 9'un tasarımı doğru) ama her istek bu gizli
-    # gecikmeyi ödüyor; /search bir cache-miss'te kuşak+değer+kaydet için
-    # 3 AYRI Redis çağrısı yaptığından (bkz. cache.py) bu üç katına
-    # çıkıyor. Kısa bir socket timeout (üretimde de yaygın bir değer),
-    # "cache erişilemezse hızlıca vazgeç" davranışını GERÇEKTEN hızlı hale
-    # getiriyor — Faz 9'un zaten vaat ettiği "kritik yol değil" ilkesinin
-    # eksik kalan parçası.
+def _create_redis_client() -> redis.Redis:
+    redis_url = os.environ.get("SHARDSEARCH_REDIS_URL", _DEFAULT_REDIS_URL)
+    # Found during a real load test: when Redis is unreachable (connection
+    # refused), redis-py's default behavior can take several seconds to
+    # raise ConnectionError in some environments — SearchCache swallows
+    # this error (search doesn't crash, which is the right design) but
+    # every request pays that hidden delay; since a /search cache miss
+    # makes 3 SEPARATE Redis calls (generation + get + set, see cache.py)
+    # this cost multiplies. A short socket timeout (a common production
+    # value too) makes "give up quickly when the cache is unreachable"
+    # genuinely fast — the missing piece of the "not on the critical path"
+    # guarantee the cache design already promised.
     return redis.from_url(
         redis_url, decode_responses=True, socket_connect_timeout=0.2, socket_timeout=0.2
     )
@@ -78,18 +82,18 @@ def _redis_istemcisi_olustur() -> redis.Redis:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    veri_dizini = Path(os.environ.get("SHARDSEARCH_DATA_DIR", _VARSAYILAN_VERI_DIZINI))
-    veri_dizini.mkdir(parents=True, exist_ok=True)
+    data_dir = Path(os.environ.get("SHARDSEARCH_DATA_DIR", _DEFAULT_DATA_DIR))
+    data_dir.mkdir(parents=True, exist_ok=True)
 
-    shard_idler = shardlari_yukle()
-    app.state.shardlar = {
-        shard_id: SqliteTersIndeks(veri_dizini / f"{shard_id}.db") for shard_id in shard_idler
+    shard_ids = load_shards()
+    app.state.shards = {
+        shard_id: SqliteInvertedIndex(data_dir / f"{shard_id}.db") for shard_id in shard_ids
     }
-    app.state.tutarli_hash = TutarliHash(shard_idler)
-    app.state.cache = AramaCache(_redis_istemcisi_olustur())
+    app.state.consistent_hash = ConsistentHash(shard_ids)
+    app.state.cache = SearchCache(_create_redis_client())
     yield
-    for indeks in app.state.shardlar.values():
-        indeks.kapat()
+    for index in app.state.shards.values():
+        index.close()
 
 
 app = FastAPI(title="ShardSearch", lifespan=_lifespan)
@@ -97,76 +101,70 @@ app = FastAPI(title="ShardSearch", lifespan=_lifespan)
 
 @app.middleware("http")
 async def _log_middleware(request: Request, call_next):
-    baslangic = time.perf_counter()
-    yanit = await call_next(request)
-    sure_ms = (time.perf_counter() - baslangic) * 1000
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start) * 1000
 
-    ekstra: dict[str, object] = {}
+    extra: dict[str, object] = {}
     if request.url.path == "/search":
-        ekstra["sorgu"] = request.query_params.get("q")
-        ekstra["limit"] = request.query_params.get("limit")
-        ekstra["cache_hit"] = getattr(request.state, "cache_hit", None)
-        ekstra["basarisiz_shardlar"] = getattr(request.state, "basarisiz_shardlar", None)
+        extra["query"] = request.query_params.get("q")
+        extra["limit"] = request.query_params.get("limit")
+        extra["cache_hit"] = getattr(request.state, "cache_hit", None)
+        extra["failed_shards"] = getattr(request.state, "failed_shards", None)
 
-    istek_logla(
+    log_request(
         _logger,
         endpoint=request.url.path,
-        metod=request.method,
-        sure_ms=sure_ms,
-        durum_kodu=yanit.status_code,
-        **ekstra,
+        method=request.method,
+        duration_ms=duration_ms,
+        status_code=response.status_code,
+        **extra,
     )
-    return yanit
+    return response
 
 
-@app.post("/index", response_model=BelgeEkleYaniti, status_code=201)
-async def belge_ekle(istek: BelgeEkleIstegi) -> BelgeEkleYaniti:
-    # DENEY (Faz 10 sonrası performans soruşturması, bkz.
-    # docs/known-limitations.md): önceden senkron (`def`) bir route'tu,
-    # Starlette onu kendi anyio thread pool'unda çalıştırıyordu.
-    # `dagitik_ara()` (fan_out.py) ise shard sorguları için AYRI bir
-    # mekanizma (asyncio.to_thread, varsayılan asyncio executor)
-    # kullanıyor. Bu route'u da async'e çevirip AYNI asyncio.to_thread
-    # mekanizmasına taşımak, iki farklı thread pool'un çakışmasının
-    # gerçek darboğaz nedeni olup olmadığını test ediyor.
-    shard_id = app.state.tutarli_hash.shard_bul(istek.belge_id)
-    await asyncio.to_thread(
-        app.state.shardlar[shard_id].belge_ekle, istek.belge_id, istek.metin
-    )
-    await asyncio.to_thread(app.state.cache.gecersiz_kil)
-    return BelgeEkleYaniti(belge_id=istek.belge_id, durum="eklendi")
+@app.post("/index", response_model=AddDocumentResponse, status_code=201)
+async def add_document(request: AddDocumentRequest) -> AddDocumentResponse:
+    # This route is async so its blocking work runs through the same
+    # asyncio.to_thread mechanism distributed_search() (fan_out.py) uses
+    # for shard queries, rather than a separate thread pool for
+    # synchronous routes — avoiding two different thread pools competing
+    # under concurrent load.
+    shard_id = app.state.consistent_hash.find_shard(request.doc_id)
+    await asyncio.to_thread(app.state.shards[shard_id].add_document, request.doc_id, request.text)
+    await asyncio.to_thread(app.state.cache.invalidate)
+    return AddDocumentResponse(doc_id=request.doc_id, status="indexed")
 
 
-@app.get("/search", response_model=AramaYaniti)
-async def ara(request: Request, q: str, limit: int = Query(default=10, gt=0)) -> AramaYaniti:
-    # DÜZELTME (Faz 10 sonrası performans soruşturması): bu route zaten
-    # `async def`'ti ama cache.getir()/kaydet() DOĞRUDAN (senkron, hiç
-    # to_thread'siz) çağrılıyordu — bu, tek event loop thread'ini Redis
-    # çağrısı süresince BLOKE ediyordu, aynı anda başka HİÇBİR isteğin
-    # işlenmesine izin vermeden. Bu muhtemelen kuyruk birikmesinin asıl
-    # nedeniydi (thread pool çakışmasından daha doğrudan bir açıklama).
-    onbellekteki = await asyncio.to_thread(app.state.cache.getir, q, limit)
-    if onbellekteki is not None:
+@app.get("/search", response_model=SearchResponse)
+async def search(request: Request, q: str, limit: int = Query(default=10, gt=0)) -> SearchResponse:
+    # cache.get()/set() are called through asyncio.to_thread rather than
+    # directly — a direct synchronous call would block the single event
+    # loop thread for the duration of the Redis round-trip, preventing
+    # ANY other request from being processed in the meantime under
+    # concurrent load.
+    cached = await asyncio.to_thread(app.state.cache.get, q, limit)
+    if cached is not None:
         request.state.cache_hit = True
-        request.state.basarisiz_shardlar = []
-        return AramaYaniti(**onbellekteki)
+        request.state.failed_shards = []
+        return SearchResponse(**cached)
 
     request.state.cache_hit = False
     try:
-        sonuc = await dagitik_ara(app.state.shardlar, q, limit)
-    except SorguHatasi as hata:
-        raise HTTPException(status_code=400, detail=str(hata)) from hata
+        result = await distributed_search(app.state.shards, q, limit)
+    except QueryError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
-    sonuclar = []
-    for belge_id, skor in sonuc.sonuclar:
-        shard_id = app.state.tutarli_hash.shard_bul(belge_id)
-        metin = app.state.shardlar[shard_id].belge_metni(belge_id)
-        sonuclar.append(AramaSonucu(belge_id=belge_id, skor=skor, metin=metin))
+    results = []
+    for doc_id, score in result.results:
+        shard_id = app.state.consistent_hash.find_shard(doc_id)
+        text = app.state.shards[shard_id].document_text(doc_id)
+        results.append(SearchResult(doc_id=doc_id, score=score, text=text))
 
-    yanit = AramaYaniti(sorgu=q, sonuclar=sonuclar, basarisiz_shardlar=sonuc.basarisiz_shardlar)
-    request.state.basarisiz_shardlar = sonuc.basarisiz_shardlar
+    response = SearchResponse(query=q, results=results, failed_shards=result.failed_shards)
+    request.state.failed_shards = result.failed_shards
 
-    if not yanit.basarisiz_shardlar:
-        await asyncio.to_thread(app.state.cache.kaydet, q, limit, yanit.model_dump())
+    if not response.failed_shards:
+        await asyncio.to_thread(app.state.cache.set, q, limit, response.model_dump())
 
-    return yanit
+    return response

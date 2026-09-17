@@ -1,7 +1,7 @@
-"""Faz 1 testleri: tokenize() beklenen token listesini üretiyor mu.
+"""Phase 1 tests: does tokenize() produce the expected token list.
 
-Beklenen değerler elle hesaplandı (bkz. Faz 1 planı): önce turkish_lower,
-sonra apostroftan öncesini alma, sonra sadece harfleri tutma kuralı.
+Expected values were computed by hand: first turkish_lower, then taking
+everything before an apostrophe, then keeping only letters.
 """
 
 import pytest
@@ -10,9 +10,9 @@ from shardsearch.tokenizer import tokenize, turkish_lower
 
 
 @pytest.mark.parametrize(
-    ("metin", "beklenen"),
+    ("text", "expected"),
     [
-        # 10 farklı Türkçe cümle
+        # 10 different Turkish sentences
         ("Türkiye'nin başkenti Ankara'dır.", ["türkiye", "başkenti", "ankara"]),
         ("İstanbul çok güzel bir şehir!", ["istanbul", "çok", "güzel", "bir", "şehir"]),
         ("Işık hızı sabittir.", ["ışık", "hızı", "sabittir"]),
@@ -32,23 +32,23 @@ from shardsearch.tokenizer import tokenize, turkish_lower
         ("Öğretmen öğrencilere ödev verdi.", ["öğretmen", "öğrencilere", "ödev", "verdi"]),
         ("Şu anda saat 14:30.", ["şu", "anda", "saat"]),
         ("Ekonomi %5 büyüdü.", ["ekonomi", "büyüdü"]),
-        # Edge case'ler
+        # Edge cases
         ("Iğdır'dan İzmir'e gidildi.", ["ığdır", "izmir", "gidildi"]),
         ("TÜM HARFLER BÜYÜK", ["tüm", "harfler", "büyük"]),
-        ("Türkiye'", ["türkiye"]),  # apostrof var, sonrası boş
-        ("'nin bir şeyi yok.", ["bir", "şeyi", "yok"]),  # apostrof kelime başında
-        ("!!! ... ???", []),  # salt noktalama
-        ("", []),  # boş string
-        ("2024 2025 2026", []),  # salt sayı
-        ("   \t\n  ", []),  # sadece boşluk
+        ("Türkiye'", ["türkiye"]),  # apostrophe present, nothing after it
+        ("'nin bir şeyi yok.", ["bir", "şeyi", "yok"]),  # apostrophe at the start of a word
+        ("!!! ... ???", []),  # punctuation only
+        ("", []),  # empty string
+        ("2024 2025 2026", []),  # digits only
+        ("   \t\n  ", []),  # whitespace only
     ],
 )
-def test_tokenize(metin: str, beklenen: list[str]) -> None:
-    assert tokenize(metin) == beklenen
+def test_tokenize(text: str, expected: list[str]) -> None:
+    assert tokenize(text) == expected
 
 
 @pytest.mark.parametrize(
-    ("girdi", "beklenen"),
+    ("input_", "expected"),
     [
         ("I", "ı"),
         ("İ", "i"),
@@ -56,5 +56,5 @@ def test_tokenize(metin: str, beklenen: list[str]) -> None:
         ("İZMİR", "izmir"),
     ],
 )
-def test_turkish_lower_i_ayrimi(girdi: str, beklenen: str) -> None:
-    assert turkish_lower(girdi) == beklenen
+def test_turkish_lower_i_distinction(input_: str, expected: str) -> None:
+    assert turkish_lower(input_) == expected

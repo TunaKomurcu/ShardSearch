@@ -1,37 +1,36 @@
-"""Ters indeksin SQLite üzerinde kalıcı hali.
+"""Persistent, SQLite-backed version of the inverted index.
 
-TersIndeks (Faz 2) ile BİREBİR AYNI metot yüzeyini sunar (belge_ekle,
-postings_getir, belge_sayisi, belge_uzunlugu, ortalama_belge_uzunlugu,
-belge_metni) — tek fark, veri bellekte bir dict'te değil diskte üç
-tabloda tutuluyor. Resmi bir Protocol/ABC tanımlanmadı; şimdilik
-duck-typing yeterli.
+Exposes the EXACT SAME method surface as InvertedIndex (add_document,
+get_postings, document_count, document_length, average_document_length,
+document_text) — the only difference is the data lives on disk in three
+tables instead of in an in-memory dict. No formal Protocol/ABC is
+defined; duck-typing is enough for now.
 
-Şema:
-- belgeler(belge_id PK, uzunluk, metin): her belgenin token sayısı ve
-  orijinal metni (Faz 6'da /search sonuçlarında göstermek için eklendi).
-- postings(token, belge_id, frekans, pozisyonlar), PK(token, belge_id):
-  bu birincil anahtar aynı zamanda (token, belge_id) sırasıyla bir index
-  oluşturur, bu yüzden "WHERE token=? ORDER BY belge_id" sorgusu ekstra
-  sıralama yapmadan index taramasıyla zaten sıralı döner — bellek içi
-  versiyondaki bisect'in SQLite karşılığı.
-- meta(id=0 tek satır, toplam_belge_sayisi, toplam_belge_uzunlugu): bu
-  olmasa belge_sayisi()/ortalama_belge_uzunlugu() her çağrıda COUNT(*)/
-  SUM(uzunluk) ile tüm belgeler tablosunu taramak zorunda kalırdı — Faz
-  3'te bilinçli kaçındığımız O(n) hesaplamaya SQLite'ta geri dönmüş
-  oluruz. Bunun yerine her belge_ekle/upsert'te aynı transaction içinde
-  bu tek satır artımlı güncellenir, okuma O(1) kalır.
+Schema:
+- documents(doc_id PK, length, text): each document's token count and
+  original text (the text is kept so /search results can display it).
+- postings(token, doc_id, frequency, positions), PK(token, doc_id): this
+  primary key also forms an index ordered by (token, doc_id), so
+  "WHERE token=? ORDER BY doc_id" comes back already sorted via an index
+  scan with no extra sort step — the SQLite counterpart of the in-memory
+  version's bisect-based insertion order.
+- meta(id=0 single row, total_document_count, total_document_length):
+  without this, document_count()/average_document_length() would have to
+  COUNT(*)/SUM(length) over the whole documents table on every call — the
+  exact O(n) computation we deliberately avoided when designing BM25.
+  Instead this single row is updated incrementally, in the same
+  transaction, on every add_document/upsert, so reads stay O(1).
 
-Thread-safety (Faz 6'da FastAPI entegrasyonu için eklendi):
-`check_same_thread=False` SADECE Python'un "bu bağlantı oluşturulduğu
-thread dışında kullanılamaz" kontrolünü kapatır — SQLite bağlantısının
-kendisi hâlâ eşzamanlı çoklu-thread erişimine karşı güvenli değildir.
-FastAPI'de senkron (`def`) route'lar Starlette tarafından bir thread
-pool'da çalıştırılır, yani API'nin paylaştığı tek SqliteTersIndeks
-bağlantısına gerçekten farklı thread'lerden erişilebilir. `self._kilit`
-(bir `threading.Lock`), bağlantıya dokunan her metodu sarmalayarak
-SQLite'ın zımni "aynı anda tek kullanıcı" varsayımını kod tarafında
-garanti eder — tam bir connection pool kurmadan, kapsam için yeterli en
-küçük doğru çözüm.
+Thread-safety (added for the FastAPI integration): `check_same_thread=False`
+ONLY disables Python's "this connection may not be used outside the
+thread that created it" check — the SQLite connection itself is still not
+safe for concurrent multi-threaded access. FastAPI runs synchronous
+(`def`) routes in a thread pool via Starlette, so the single
+SqliteInvertedIndex connection shared by the API can genuinely be
+accessed from different threads. `self._lock` (a `threading.Lock`) wraps
+every method that touches the connection, enforcing SQLite's implicit
+"one user at a time" assumption on the code side — the smallest correct
+fix for this scope, short of building a real connection pool.
 """
 
 import json
@@ -42,141 +41,141 @@ from pathlib import Path
 from shardsearch.index.postings import Posting
 from shardsearch.tokenizer import tokenize
 
-_SEMA = """
-CREATE TABLE IF NOT EXISTS belgeler (
-    belge_id TEXT PRIMARY KEY,
-    uzunluk INTEGER NOT NULL,
-    metin TEXT NOT NULL
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS documents (
+    doc_id TEXT PRIMARY KEY,
+    length INTEGER NOT NULL,
+    text TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS postings (
     token TEXT NOT NULL,
-    belge_id TEXT NOT NULL,
-    frekans INTEGER NOT NULL,
-    pozisyonlar TEXT NOT NULL,
-    PRIMARY KEY (token, belge_id)
+    doc_id TEXT NOT NULL,
+    frequency INTEGER NOT NULL,
+    positions TEXT NOT NULL,
+    PRIMARY KEY (token, doc_id)
 );
 
--- (token, belge_id) birincil anahtarı sadece token'la başlayan aramalarda
--- (WHERE token=?) verimlidir — bir index, sütunlarının SOLDAN itibaren
--- sıralı bir ön ekiyle arama yapıldığında kullanılabilir. belge_id TEK
--- BAŞINA aranırken (upsert sırasında "bu belgenin tüm postings'lerini
--- sil" için) o composite index işe yaramaz, SQLite tüm postings
--- tablosunu taramak zorunda kalır. Bu yüzden belge_id üzerinde ayrı bir
--- index gerekiyor — bellek içi versiyondaki _belge_tokenlari haritasının
--- (orada Python dict, burada SQLite index) aynı amaca hizmet eden karşılığı.
-CREATE INDEX IF NOT EXISTS idx_postings_belge_id ON postings (belge_id);
+-- The (token, doc_id) primary key is only efficient for searches that
+-- start with token (WHERE token=?) — an index can be used when the
+-- search matches a sorted prefix of its columns FROM THE LEFT. Searching
+-- by doc_id ALONE (to delete "all postings for this document" during an
+-- upsert) can't use that composite index, so SQLite would have to scan
+-- the whole postings table. Hence a separate index on doc_id — the
+-- SQLite counterpart of the in-memory version's _document_tokens map
+-- (there a Python dict, here a SQLite index, same purpose).
+CREATE INDEX IF NOT EXISTS idx_postings_doc_id ON postings (doc_id);
 
 CREATE TABLE IF NOT EXISTS meta (
     id INTEGER PRIMARY KEY CHECK (id = 0),
-    toplam_belge_sayisi INTEGER NOT NULL,
-    toplam_belge_uzunlugu INTEGER NOT NULL
+    total_document_count INTEGER NOT NULL,
+    total_document_length INTEGER NOT NULL
 );
 """
 
 
-class SqliteTersIndeks:
-    def __init__(self, veritabani_yolu: str | Path) -> None:
-        self._conn = sqlite3.connect(veritabani_yolu, check_same_thread=False)
-        self._kilit = threading.Lock()
-        with self._kilit:
-            self._conn.executescript(_SEMA)
+class SqliteInvertedIndex:
+    def __init__(self, db_path: str | Path) -> None:
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._lock = threading.Lock()
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
             self._conn.execute(
-                "INSERT OR IGNORE INTO meta (id, toplam_belge_sayisi, toplam_belge_uzunlugu) "
+                "INSERT OR IGNORE INTO meta (id, total_document_count, total_document_length) "
                 "VALUES (0, 0, 0)"
             )
             self._conn.commit()
 
-    def belge_ekle(self, belge_id: str, metin: str) -> None:
-        with self._kilit, self._conn:
-            var_mi = self._conn.execute(
-                "SELECT 1 FROM belgeler WHERE belge_id = ?", (belge_id,)
+    def add_document(self, doc_id: str, text: str) -> None:
+        with self._lock, self._conn:
+            exists = self._conn.execute(
+                "SELECT 1 FROM documents WHERE doc_id = ?", (doc_id,)
             ).fetchone()
-            if var_mi is not None:
-                self._belgeyi_sil(belge_id)
+            if exists is not None:
+                self._remove_document(doc_id)
 
-            tokenler = tokenize(metin)
-            pozisyonlar_by_token: dict[str, list[int]] = {}
-            for pozisyon, token in enumerate(tokenler):
-                pozisyonlar_by_token.setdefault(token, []).append(pozisyon)
+            tokens = tokenize(text)
+            positions_by_token: dict[str, list[int]] = {}
+            for position, token in enumerate(tokens):
+                positions_by_token.setdefault(token, []).append(position)
 
             self._conn.execute(
-                "INSERT INTO belgeler (belge_id, uzunluk, metin) VALUES (?, ?, ?)",
-                (belge_id, len(tokenler), metin),
+                "INSERT INTO documents (doc_id, length, text) VALUES (?, ?, ?)",
+                (doc_id, len(tokens), text),
             )
             self._conn.executemany(
-                "INSERT INTO postings (token, belge_id, frekans, pozisyonlar) "
+                "INSERT INTO postings (token, doc_id, frequency, positions) "
                 "VALUES (?, ?, ?, ?)",
                 [
-                    (token, belge_id, len(pozisyonlar), json.dumps(pozisyonlar))
-                    for token, pozisyonlar in pozisyonlar_by_token.items()
+                    (token, doc_id, len(positions), json.dumps(positions))
+                    for token, positions in positions_by_token.items()
                 ],
             )
-            self._meta_guncelle(sayisi_delta=1, uzunluk_delta=len(tokenler))
+            self._update_meta(count_delta=1, length_delta=len(tokens))
 
-    def _belgeyi_sil(self, belge_id: str) -> None:
-        # Çağıran (belge_ekle) zaten self._kilit'i tutuyor — burada ayrıca
-        # kilitlenmiyoruz (aynı thread'de tekrar kilitlenmek threading.Lock
-        # ile kilitlenmeye çalışırken sonsuza kadar beklemeye yol açar).
-        eski_uzunluk = self._conn.execute(
-            "SELECT uzunluk FROM belgeler WHERE belge_id = ?", (belge_id,)
+    def _remove_document(self, doc_id: str) -> None:
+        # The caller (add_document) already holds self._lock — we don't
+        # lock again here (re-acquiring a threading.Lock on the same
+        # thread would deadlock forever).
+        old_length = self._conn.execute(
+            "SELECT length FROM documents WHERE doc_id = ?", (doc_id,)
         ).fetchone()[0]
-        self._conn.execute("DELETE FROM postings WHERE belge_id = ?", (belge_id,))
-        self._conn.execute("DELETE FROM belgeler WHERE belge_id = ?", (belge_id,))
-        self._meta_guncelle(sayisi_delta=-1, uzunluk_delta=-eski_uzunluk)
+        self._conn.execute("DELETE FROM postings WHERE doc_id = ?", (doc_id,))
+        self._conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+        self._update_meta(count_delta=-1, length_delta=-old_length)
 
-    def _meta_guncelle(self, sayisi_delta: int, uzunluk_delta: int) -> None:
+    def _update_meta(self, count_delta: int, length_delta: int) -> None:
         self._conn.execute(
-            "UPDATE meta SET toplam_belge_sayisi = toplam_belge_sayisi + ?, "
-            "toplam_belge_uzunlugu = toplam_belge_uzunlugu + ? WHERE id = 0",
-            (sayisi_delta, uzunluk_delta),
+            "UPDATE meta SET total_document_count = total_document_count + ?, "
+            "total_document_length = total_document_length + ? WHERE id = 0",
+            (count_delta, length_delta),
         )
 
-    def postings_getir(self, token: str) -> list[Posting]:
-        with self._kilit:
-            satirlar = self._conn.execute(
-                "SELECT belge_id, frekans, pozisyonlar FROM postings "
-                "WHERE token = ? ORDER BY belge_id",
+    def get_postings(self, token: str) -> list[Posting]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT doc_id, frequency, positions FROM postings "
+                "WHERE token = ? ORDER BY doc_id",
                 (token,),
             ).fetchall()
         return [
-            Posting(belge_id, frekans, json.loads(pozisyonlar))
-            for belge_id, frekans, pozisyonlar in satirlar
+            Posting(doc_id, frequency, json.loads(positions))
+            for doc_id, frequency, positions in rows
         ]
 
-    def belge_sayisi(self) -> int:
-        with self._kilit:
-            (deger,) = self._conn.execute(
-                "SELECT toplam_belge_sayisi FROM meta WHERE id = 0"
+    def document_count(self) -> int:
+        with self._lock:
+            (value,) = self._conn.execute(
+                "SELECT total_document_count FROM meta WHERE id = 0"
             ).fetchone()
-        return deger
+        return value
 
-    def belge_uzunlugu(self, belge_id: str) -> int:
-        with self._kilit:
-            satir = self._conn.execute(
-                "SELECT uzunluk FROM belgeler WHERE belge_id = ?", (belge_id,)
+    def document_length(self, doc_id: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT length FROM documents WHERE doc_id = ?", (doc_id,)
             ).fetchone()
-        if satir is None:
-            raise KeyError(belge_id)
-        return satir[0]
+        if row is None:
+            raise KeyError(doc_id)
+        return row[0]
 
-    def belge_metni(self, belge_id: str) -> str:
-        with self._kilit:
-            satir = self._conn.execute(
-                "SELECT metin FROM belgeler WHERE belge_id = ?", (belge_id,)
+    def document_text(self, doc_id: str) -> str:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT text FROM documents WHERE doc_id = ?", (doc_id,)
             ).fetchone()
-        if satir is None:
-            raise KeyError(belge_id)
-        return satir[0]
+        if row is None:
+            raise KeyError(doc_id)
+        return row[0]
 
-    def ortalama_belge_uzunlugu(self) -> float:
-        with self._kilit:
-            sayisi, uzunluk = self._conn.execute(
-                "SELECT toplam_belge_sayisi, toplam_belge_uzunlugu FROM meta WHERE id = 0"
+    def average_document_length(self) -> float:
+        with self._lock:
+            count, length = self._conn.execute(
+                "SELECT total_document_count, total_document_length FROM meta WHERE id = 0"
             ).fetchone()
-        if sayisi == 0:
+        if count == 0:
             return 0.0
-        return uzunluk / sayisi
+        return length / count
 
-    def kapat(self) -> None:
+    def close(self) -> None:
         self._conn.close()

@@ -1,7 +1,7 @@
 [project]
 name = "shardsearch"
 version = "0.1.0"
-description = "Sıfırdan inşa edilmiş, dağıtık çalışabilen bir öğrenme amaçlı arama motoru"
+description = "A distributed text search engine built from scratch — inverted index, BM25, consistent hashing, and async fan-out, with no off-the-shelf search library"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,20 +15,20 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "httpx>=0.27",
-    # Ortamda gerçek Redis/Docker/WSL yok (bkz. docs/known-limitations.md) —
-    # testlerde ve bu oturumdaki geliştirmede gerçek Redis yerine kullanılıyor.
-    # src/ asla import etmez (bkz. test_fakeredis_izolasyonu.py).
+    # No real Redis/Docker/WSL available in this environment (see
+    # docs/known-limitations.md) — used as a stand-in for real Redis in
+    # tests. Never imported by src/ (see test_fakeredis_isolation.py).
     "fakeredis>=2.20",
 ]
-# SADECE tests/validation/ içinde referans olarak kullanılır — src/ asla
-# import etmez (bkz. tests/validation/test_rank_bm25_izolasyonu.py).
-# Ayrı grupta tutulduğu için `uv sync` (validation belirtilmeden) bunu kurmaz.
+# Used ONLY inside tests/validation/ as a reference — never imported by
+# src/ (see tests/validation/test_rank_bm25_isolation.py). Kept in a
+# separate group so a plain `uv sync` (without validation) doesn't install it.
 validation = [
     "rank_bm25>=0.2.2",
 ]
-# SADECE benchmarks/locustfile.py'yi çalıştırmak için gerekli — src/ asla
-# import etmez. Ayrı grupta tutulduğu için normal `uv sync` bunu kurmaz,
-# sadece `uv sync --group loadtest` ile gelir.
+# Needed ONLY to run benchmarks/locustfile.py — never imported by src/.
+# Kept in a separate group so a plain `uv sync` doesn't install it, only
+# `uv sync --group loadtest` does.
 loadtest = [
     "locust>=2.20",
 ]

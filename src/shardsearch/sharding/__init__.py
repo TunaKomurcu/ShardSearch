@@ -1,4 +1,4 @@
-from shardsearch.sharding.config import shardlari_yukle
-from shardsearch.sharding.consistent_hash import TutarliHash
+from shardsearch.sharding.config import load_shards
+from shardsearch.sharding.consistent_hash import ConsistentHash
 
-__all__ = ["TutarliHash", "shardlari_yukle"]
+__all__ = ["ConsistentHash", "load_shards"]

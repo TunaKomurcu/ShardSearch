@@ -1,127 +1,128 @@
-"""Faz 7 testleri: consistent hashing doğru dağıtıyor mu ve resharding
-minimum veri yer değiştirmesiyle mi çalışıyor.
+"""Phase 7 tests: does consistent hashing distribute correctly, and does
+resharding move a minimal amount of data.
 
-Sentetik ID'ler kasıtlı olarak ARDIŞIK üretildi ("belge-0", "belge-1", ...)
-— rastgele ID değil. Amaç bunu gizlemek değil, tam tersini kanıtlamak:
-sha256'nın avalanche etkisi sayesinde ardışık/örüntülü ID'ler bile
-birbiriyle ilgisiz hash değerlerine dağılır. Zayıf bir hash fonksiyonuyla
-(ör. basit toplama tabanlı) ardışık ID'ler halkada kümelenip dengesiz
-dağılıma yol açabilirdi — bu testin asıl amacı sha256 seçiminin bu riski
-gerçekten ortadan kaldırdığını göstermek.
+Synthetic IDs are deliberately generated SEQUENTIALLY ("doc-0", "doc-1",
+...) rather than randomly. The goal isn't to hide this but to prove the
+opposite: thanks to sha256's avalanche effect, even sequential/patterned
+IDs spread out into unrelated hash values. With a weak hash function
+(e.g. simple summation), sequential IDs could cluster on the ring and
+cause an uneven distribution — this test's real purpose is to show the
+choice of sha256 genuinely eliminates that risk.
 """
 
 import pytest
 
-from shardsearch.sharding import TutarliHash
+from shardsearch.sharding import ConsistentHash
 
 
-def _sentetik_id_uret(adet: int) -> list[str]:
-    return [f"belge-{i}" for i in range(adet)]
+def _generate_synthetic_ids(count: int) -> list[str]:
+    return [f"doc-{i}" for i in range(count)]
 
 
-def test_ayni_id_hep_ayni_shard_donuyor() -> None:
-    halka = TutarliHash(["shard-0", "shard-1", "shard-2"])
-    ilk_sonuc = halka.shard_bul("belge-42")
+def test_the_same_id_always_returns_the_same_shard() -> None:
+    ring = ConsistentHash(["shard-0", "shard-1", "shard-2"])
+    first_result = ring.find_shard("doc-42")
     for _ in range(10):
-        assert halka.shard_bul("belge-42") == ilk_sonuc
+        assert ring.find_shard("doc-42") == first_result
 
 
-def test_gecerli_bir_shard_donuyor() -> None:
-    shardlar = ["shard-0", "shard-1", "shard-2"]
-    halka = TutarliHash(shardlar)
-    for belge_id in _sentetik_id_uret(200):
-        assert halka.shard_bul(belge_id) in shardlar
+def test_returns_a_valid_shard() -> None:
+    shards = ["shard-0", "shard-1", "shard-2"]
+    ring = ConsistentHash(shards)
+    for doc_id in _generate_synthetic_ids(200):
+        assert ring.find_shard(doc_id) in shards
 
 
-def test_halka_bossa_hata_verir() -> None:
-    halka = TutarliHash([])
+def test_an_empty_ring_raises_an_error() -> None:
+    ring = ConsistentHash([])
     with pytest.raises(ValueError):
-        halka.shard_bul("belge-1")
+        ring.find_shard("doc-1")
 
 
-def test_dagilim_istatistigi_makul_aralikta() -> None:
-    shardlar = ["shard-0", "shard-1", "shard-2", "shard-3", "shard-4"]
-    halka = TutarliHash(shardlar, sanal_dugum_sayisi=100)
-    idler = _sentetik_id_uret(10_000)
+def test_distribution_stats_stay_within_a_reasonable_range() -> None:
+    shards = ["shard-0", "shard-1", "shard-2", "shard-3", "shard-4"]
+    ring = ConsistentHash(shards, virtual_node_count=100)
+    ids = _generate_synthetic_ids(10_000)
 
-    sayaçlar: dict[str, int] = dict.fromkeys(shardlar, 0)
-    for belge_id in idler:
-        sayaçlar[halka.shard_bul(belge_id)] += 1
+    counts: dict[str, int] = dict.fromkeys(shards, 0)
+    for doc_id in ids:
+        counts[ring.find_shard(doc_id)] += 1
 
-    ortalama = len(idler) / len(shardlar)
-    for shard_id, sayi in sayaçlar.items():
-        oran = sayi / ortalama
-        assert 0.70 <= oran <= 1.30, f"{shard_id} dengesiz: {sayi} belge (oran={oran:.2f})"
+    average = len(ids) / len(shards)
+    for shard_id, count in counts.items():
+        ratio = count / average
+        assert 0.70 <= ratio <= 1.30, f"{shard_id} is unbalanced: {count} docs (ratio={ratio:.2f})"
 
 
-def test_resharding_sadece_eskiden_yeniye_gecis_olur() -> None:
-    """Tutarlı hash'i naive hash(id) % N'den ayıran asıl özellik:
-    yeni bir shard eklendiğinde SADECE bazı anahtarlar eski
-    shard'lardan YENİ shard'a taşınır — iki eski shard arasında hiçbir
-    yer değiştirme OLMAMALIDIR. Naive mod-N hashleme yeni shard
-    eklendiğinde neredeyse tüm anahtarları karıştırır; bu test tam
-    olarak bunun OLMADIĞINI kanıtlıyor.
+def test_resharding_only_moves_keys_from_old_shards_to_the_new_one() -> None:
+    """The property that sets consistent hashing apart from naive
+    hash(id) % N: when a new shard is added, ONLY some keys move from the
+    old shards to the NEW shard — there must be NO movement between two
+    old shards. Naive mod-N hashing reshuffles nearly every key when a
+    shard is added; this test proves that exact failure mode does NOT
+    happen here.
     """
-    eski_shardlar = ["shard-0", "shard-1", "shard-2"]
-    halka = TutarliHash(eski_shardlar)
-    idler = _sentetik_id_uret(5_000)
+    old_shards = ["shard-0", "shard-1", "shard-2"]
+    ring = ConsistentHash(old_shards)
+    ids = _generate_synthetic_ids(5_000)
 
-    eski_atama = {belge_id: halka.shard_bul(belge_id) for belge_id in idler}
+    old_assignment = {doc_id: ring.find_shard(doc_id) for doc_id in ids}
 
-    halka.shard_ekle("shard-3")
-    yeni_atama = {belge_id: halka.shard_bul(belge_id) for belge_id in idler}
+    ring.add_shard("shard-3")
+    new_assignment = {doc_id: ring.find_shard(doc_id) for doc_id in ids}
 
-    tasinanlar = 0
-    for belge_id in idler:
-        eski = eski_atama[belge_id]
-        yeni = yeni_atama[belge_id]
-        if eski != yeni:
-            tasinanlar += 1
-            # Kritik doğrulama: taşınma SADECE eski bir shard'dan YENİ
-            # shard'a olabilir, iki eski shard arasında asla.
-            assert yeni == "shard-3", (
-                f"{belge_id} eski bir shard'dan ({eski}) başka bir eski "
-                f"shard'a ({yeni}) taşınmış — bu naive rehashing'in belirtisi"
+    moved = 0
+    for doc_id in ids:
+        old = old_assignment[doc_id]
+        new = new_assignment[doc_id]
+        if old != new:
+            moved += 1
+            # Critical check: movement can ONLY be from an old shard to
+            # the NEW shard, never between two old shards.
+            assert new == "shard-3", (
+                f"{doc_id} moved from an old shard ({old}) to another "
+                f"old shard ({new}) — a symptom of naive rehashing"
             )
 
-    # Teorik beklenti: yaklaşık 1/(N+1) = 1/4 = %25'i yeni shard'a taşınır.
-    tasinma_orani = tasinanlar / len(idler)
-    assert 0.15 <= tasinma_orani <= 0.35, f"taşınma oranı beklenenden uzak: {tasinma_orani:.2%}"
+    # Theoretical expectation: roughly 1/(N+1) = 1/4 = 25% moves to the new shard.
+    move_ratio = moved / len(ids)
+    assert 0.15 <= move_ratio <= 0.35, f"move ratio is far from expected: {move_ratio:.2%}"
 
 
-def test_shard_cikarinca_sadece_o_shardin_verisi_dagilir() -> None:
-    shardlar = ["shard-0", "shard-1", "shard-2", "shard-3"]
-    halka = TutarliHash(shardlar)
-    idler = _sentetik_id_uret(5_000)
+def test_removing_a_shard_only_redistributes_that_shards_data() -> None:
+    shards = ["shard-0", "shard-1", "shard-2", "shard-3"]
+    ring = ConsistentHash(shards)
+    ids = _generate_synthetic_ids(5_000)
 
-    eski_atama = {belge_id: halka.shard_bul(belge_id) for belge_id in idler}
-    halka.shard_cikar("shard-3")
-    yeni_atama = {belge_id: halka.shard_bul(belge_id) for belge_id in idler}
+    old_assignment = {doc_id: ring.find_shard(doc_id) for doc_id in ids}
+    ring.remove_shard("shard-3")
+    new_assignment = {doc_id: ring.find_shard(doc_id) for doc_id in ids}
 
-    for belge_id in idler:
-        eski = eski_atama[belge_id]
-        yeni = yeni_atama[belge_id]
-        if eski != "shard-3":
-            # shard-3'te olmayan hiçbir belge yer değiştirmemeli
-            assert yeni == eski, f"{belge_id} gereksiz yere taşınmış: {eski} -> {yeni}"
+    for doc_id in ids:
+        old = old_assignment[doc_id]
+        new = new_assignment[doc_id]
+        if old != "shard-3":
+            # No document outside shard-3 should have moved
+            assert new == old, f"{doc_id} moved unnecessarily: {old} -> {new}"
         else:
-            # shard-3'teki belgeler artık kalan 3 shard'dan birine gitmeli
-            assert yeni != "shard-3"
+            # Documents that were on shard-3 must now be on one of the remaining 3 shards
+            assert new != "shard-3"
 
 
-def test_sanal_dugum_sayisi_arttikca_dagilim_iyilesir() -> None:
-    shardlar = ["shard-0", "shard-1", "shard-2"]
-    idler = _sentetik_id_uret(3_000)
+def test_distribution_improves_as_virtual_node_count_grows() -> None:
+    shards = ["shard-0", "shard-1", "shard-2"]
+    ids = _generate_synthetic_ids(3_000)
 
-    def varyans_hesapla(sanal_dugum_sayisi: int) -> float:
-        halka = TutarliHash(shardlar, sanal_dugum_sayisi=sanal_dugum_sayisi)
-        sayaçlar: dict[str, int] = dict.fromkeys(shardlar, 0)
-        for belge_id in idler:
-            sayaçlar[halka.shard_bul(belge_id)] += 1
-        ortalama = len(idler) / len(shardlar)
-        return sum((sayi - ortalama) ** 2 for sayi in sayaçlar.values()) / len(shardlar)
+    def compute_variance(virtual_node_count: int) -> float:
+        ring = ConsistentHash(shards, virtual_node_count=virtual_node_count)
+        counts: dict[str, int] = dict.fromkeys(shards, 0)
+        for doc_id in ids:
+            counts[ring.find_shard(doc_id)] += 1
+        average = len(ids) / len(shards)
+        return sum((count - average) ** 2 for count in counts.values()) / len(shards)
 
-    # Çok az sanal düğümle dağılım şansa kalır, 100 ile belirgin daha dengeli olmalı.
-    varyans_az_dugum = varyans_hesapla(1)
-    varyans_cok_dugum = varyans_hesapla(100)
-    assert varyans_cok_dugum < varyans_az_dugum
+    # With very few virtual nodes, distribution is mostly luck;
+    # 100 should be noticeably more balanced.
+    variance_few_nodes = compute_variance(1)
+    variance_many_nodes = compute_variance(100)
+    assert variance_many_nodes < variance_few_nodes

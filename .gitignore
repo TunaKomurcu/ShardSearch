@@ -9,16 +9,16 @@ __pycache__/
 # uv / venv
 .venv/
 
-# SQLite veri dosyaları (Faz 4+)
+# SQLite data files
 *.db
 *.sqlite3
 
-# Referans korpus — büyük/harici veri, repoya girmez
-# Nasıl elde edileceği docs/corpus.md içinde açıklanıyor
+# Reference corpus — large/external data, not committed to the repo
+# See docs/corpus.md for how to obtain it
 data/corpus/*
 !data/corpus/.gitkeep
 
-# Locust / benchmark çıktıları (Faz 10+)
+# Locust / benchmark output
 benchmarks/results/
 
 # Editör / OS

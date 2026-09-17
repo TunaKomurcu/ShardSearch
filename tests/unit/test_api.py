@@ -1,22 +1,20 @@
-"""Faz 6/8/9 testleri: FastAPI uçtan uca — HTTP isteğiyle indeksleme ve arama.
+"""End-to-end FastAPI tests: indexing and search over real HTTP requests.
 
-TestClient, ASGI üzerinden gerçek route/dependency/lifespan akışını
-çalıştırır (mock yok) — sadece gerçek bir TCP soketi açmıyor. Gerçek
-soket üzerinden (uvicorn + curl) doğrulama ayrıca elle yapıldı (bkz. Faz
-6 özeti).
+TestClient runs the real route/dependency/lifespan flow over ASGI (no
+mocking) — it just doesn't open a real TCP socket. Verification over a
+real socket (uvicorn + curl) was also done manually.
 
-Faz 8'den itibaren `app`, `config/shards.json`'daki TÜM shard'ları
-kullanıyor (tek dosya değil) — bu testler hangi belgenin hangi shard'a
-düştüğünü bilerek varsaymıyor, sadece uçtan uca doğru sonucu doğruluyor.
-Her test kendi geçici veri dizinini kullanır (SHARDSEARCH_DATA_DIR env
-değişkeni ile) — testler birbirinin verisini görmesin diye.
+`app` uses ALL shards from `config/shards.json` (not a single file) —
+these tests don't assume which document lands on which shard, they only
+verify the end-to-end result is correct. Each test uses its own temporary
+data directory (via the SHARDSEARCH_DATA_DIR env var) so tests never see
+each other's data.
 
-Faz 9'dan itibaren gerçek Redis yerine `fakeredis` kullanılıyor (ortamda
-gerçek Redis/Docker/WSL yok, bkz. docs/known-limitations.md). `fakeredis`
-SADECE bu test dosyasında import ediliyor — `app.py`'deki
-`_redis_istemcisi_olustur()` fonksiyonu `monkeypatch` ile değiştiriliyor,
-`fakeredis` hiçbir zaman `src/` içine girmiyor (bkz.
-test_fakeredis_izolasyonu.py).
+`fakeredis` stands in for a real Redis (no real Redis/Docker/WSL in this
+environment, see docs/known-limitations.md). `fakeredis` is imported ONLY
+in this test file — `app.py`'s `_create_redis_client()` function is
+replaced via `monkeypatch`, so `fakeredis` never enters `src/` (see
+test_fakeredis_isolation.py).
 """
 
 import logging
@@ -26,21 +24,21 @@ import fakeredis
 import pytest
 from fastapi.testclient import TestClient
 
-import shardsearch.api.app as app_modulu
-import shardsearch.distributed.fan_out as fan_out_modulu
+import shardsearch.api.app as app_module
+import shardsearch.distributed.fan_out as fan_out_module
 from shardsearch.api.app import app
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    # _lifespan(), bu env değişkenlerini/factory'yi her `with TestClient(...)`
-    # bloğuna girişte (yani her testte) yeniden okuyup app.state'i baştan
-    # kuruyor — bu yüzden testler arasında modülü yeniden import etmeye
-    # gerek yok, her test kendi geçici veri dizini + izole fakeredis'iyle
-    # çalışır.
+    # _lifespan() re-reads these env vars/factory and rebuilds app.state
+    # from scratch every time a `with TestClient(...)` block is entered
+    # (i.e. on every test) — so there's no need to reimport the module
+    # between tests; each test gets its own temp data directory and
+    # isolated fakeredis instance.
     monkeypatch.setenv("SHARDSEARCH_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(
-        "shardsearch.api.app._redis_istemcisi_olustur",
+        "shardsearch.api.app._create_redis_client",
         lambda: fakeredis.FakeRedis(decode_responses=True),
     )
 
@@ -48,234 +46,234 @@ def client(tmp_path, monkeypatch):
         yield test_client
 
 
-def test_belge_ekle_201_doner(client: TestClient) -> None:
-    yanit = client.post("/index", json={"belge_id": "d01", "metin": "Kedi masada uyuyor."})
-    assert yanit.status_code == 201
-    assert yanit.json() == {"belge_id": "d01", "durum": "eklendi"}
+def test_add_document_returns_201(client: TestClient) -> None:
+    response = client.post("/index", json={"doc_id": "d01", "text": "Kedi masada uyuyor."})
+    assert response.status_code == 201
+    assert response.json() == {"doc_id": "d01", "status": "indexed"}
 
 
-def test_ucdan_uca_indeksle_ve_ara(client: TestClient) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "Kedi masada uyuyor."})
-    client.post("/index", json={"belge_id": "d02", "metin": "Köpek bahçede koşuyor."})
-    client.post("/index", json={"belge_id": "d03", "metin": "Kedi ve köpek birlikte oynuyor."})
+def test_end_to_end_index_and_search(client: TestClient) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "Kedi masada uyuyor."})
+    client.post("/index", json={"doc_id": "d02", "text": "Köpek bahçede koşuyor."})
+    client.post("/index", json={"doc_id": "d03", "text": "Kedi ve köpek birlikte oynuyor."})
 
-    yanit = client.get("/search", params={"q": "kedi"})
-    assert yanit.status_code == 200
-    govde = yanit.json()
-    assert govde["sorgu"] == "kedi"
-    belge_idler = [sonuc["belge_id"] for sonuc in govde["sonuclar"]]
-    assert set(belge_idler) == {"d01", "d03"}
-    assert "d02" not in belge_idler
-
-
-def test_arama_and_or_phrase_birlikte_calisir(client: TestClient) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "kedi köpek ile oynuyor"})
-    client.post("/index", json={"belge_id": "d02", "metin": "köpek ve kedi parkta yürüyor"})
-    client.post("/index", json={"belge_id": "d03", "metin": "balık havuzda yüzüyor"})
-
-    # "kedi köpek" (bitişik ifade) sadece d01'de geçiyor; d02'de kelimeler var
-    # ama bitişik değil, bu yüzden sonuçta olmamalı.
-    yanit = client.get("/search", params={"q": '"kedi köpek" OR balık'})
-    belge_idler = {sonuc["belge_id"] for sonuc in yanit.json()["sonuclar"]}
-    assert belge_idler == {"d01", "d03"}
+    response = client.get("/search", params={"q": "kedi"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["query"] == "kedi"
+    doc_ids = [result["doc_id"] for result in body["results"]]
+    assert set(doc_ids) == {"d01", "d03"}
+    assert "d02" not in doc_ids
 
 
-def test_arama_sonuclari_skora_gore_azalan_siralanir(client: TestClient) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "kedi kedi kedi"})
-    client.post("/index", json={"belge_id": "d02", "metin": "kedi ile ilgisiz uzun bir cümle"})
+def test_search_and_or_phrase_work_together(client: TestClient) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "kedi köpek ile oynuyor"})
+    client.post("/index", json={"doc_id": "d02", "text": "köpek ve kedi parkta yürüyor"})
+    client.post("/index", json={"doc_id": "d03", "text": "balık havuzda yüzüyor"})
 
-    yanit = client.get("/search", params={"q": "kedi"})
-    sonuclar = yanit.json()["sonuclar"]
-    skorlar = [sonuc["skor"] for sonuc in sonuclar]
-    assert skorlar == sorted(skorlar, reverse=True)
-    # kedi 3 kez geçen d01, tf daha yüksek olduğu için d02'den önde olmalı
-    assert sonuclar[0]["belge_id"] == "d01"
-
-
-def test_arama_metni_dondurur(client: TestClient) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "Kedi masada uyuyor."})
-    yanit = client.get("/search", params={"q": "kedi"})
-    assert yanit.json()["sonuclar"][0]["metin"] == "Kedi masada uyuyor."
+    # "kedi köpek" (adjacent phrase) only occurs in d01; d02 has the words
+    # but not adjacent, so it should be excluded.
+    response = client.get("/search", params={"q": '"kedi köpek" OR balık'})
+    doc_ids = {result["doc_id"] for result in response.json()["results"]}
+    assert doc_ids == {"d01", "d03"}
 
 
-def test_arama_hicbir_sonuc_yoksa_bos_liste_doner(client: TestClient) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "Kedi masada uyuyor."})
-    yanit = client.get("/search", params={"q": "olmayankelime"})
-    assert yanit.status_code == 200
-    assert yanit.json()["sonuclar"] == []
+def test_search_results_are_sorted_by_score_descending(client: TestClient) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "kedi kedi kedi"})
+    client.post("/index", json={"doc_id": "d02", "text": "kedi ile ilgisiz uzun bir cümle"})
+
+    response = client.get("/search", params={"q": "kedi"})
+    results = response.json()["results"]
+    scores = [result["score"] for result in results]
+    assert scores == sorted(scores, reverse=True)
+    # d01 mentions "kedi" 3 times, so its higher tf should rank it above d02
+    assert results[0]["doc_id"] == "d01"
 
 
-def test_arama_gecersiz_sorgu_400_doner(client: TestClient) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "Kedi masada uyuyor."})
-    yanit = client.get("/search", params={"q": "kedi köpek"})  # operatörsüz yan yana yazım
-    assert yanit.status_code == 400
+def test_search_returns_document_text(client: TestClient) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "Kedi masada uyuyor."})
+    response = client.get("/search", params={"q": "kedi"})
+    assert response.json()["results"][0]["text"] == "Kedi masada uyuyor."
 
 
-def test_arama_limit_parametresi_sonuc_sayisini_sinirlar(client: TestClient) -> None:
+def test_search_with_no_matches_returns_an_empty_list(client: TestClient) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "Kedi masada uyuyor."})
+    response = client.get("/search", params={"q": "nonexistentword"})
+    assert response.status_code == 200
+    assert response.json()["results"] == []
+
+
+def test_search_with_an_invalid_query_returns_400(client: TestClient) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "Kedi masada uyuyor."})
+    # implicit juxtaposition, no operator
+    response = client.get("/search", params={"q": "kedi köpek"})
+    assert response.status_code == 400
+
+
+def test_search_limit_parameter_caps_the_result_count(client: TestClient) -> None:
     for i in range(5):
-        client.post("/index", json={"belge_id": f"d{i}", "metin": "kedi köpek kuş"})
+        client.post("/index", json={"doc_id": f"d{i}", "text": "kedi köpek kuş"})
 
-    yanit = client.get("/search", params={"q": "kedi", "limit": 2})
-    assert len(yanit.json()["sonuclar"]) == 2
-
-
-@pytest.mark.parametrize("gecersiz_limit", [0, -1])
-def test_arama_gecersiz_limit_422_doner(client: TestClient, gecersiz_limit: int) -> None:
-    yanit = client.get("/search", params={"q": "kedi", "limit": gecersiz_limit})
-    assert yanit.status_code == 422
+    response = client.get("/search", params={"q": "kedi", "limit": 2})
+    assert len(response.json()["results"]) == 2
 
 
-def test_ayni_belge_id_ile_index_upsert_yapar(client: TestClient) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "Kedi masada uyuyor."})
-    client.post("/index", json={"belge_id": "d01", "metin": "Köpek bahçede koşuyor."})
-
-    yanit = client.get("/search", params={"q": "kedi"})
-    assert yanit.json()["sonuclar"] == []
-
-    yanit = client.get("/search", params={"q": "köpek"})
-    belge_idler = {sonuc["belge_id"] for sonuc in yanit.json()["sonuclar"]}
-    assert belge_idler == {"d01"}
+@pytest.mark.parametrize("invalid_limit", [0, -1])
+def test_search_with_an_invalid_limit_returns_422(client: TestClient, invalid_limit: int) -> None:
+    response = client.get("/search", params={"q": "kedi", "limit": invalid_limit})
+    assert response.status_code == 422
 
 
-def _dagitik_ara_cagri_sayaci(monkeypatch) -> dict[str, int]:
-    """`dagitik_ara`'nın kaç kez GERÇEKTEN çağrıldığını sayar — bir cache
-    hit'te bu fonksiyon hiç çağrılmamalı, bu yüzden zamanlamadan daha
-    güvenilir bir "cache gerçekten iş yaptı mı" kanıtı.
+def test_indexing_the_same_doc_id_again_performs_an_upsert(client: TestClient) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "Kedi masada uyuyor."})
+    client.post("/index", json={"doc_id": "d01", "text": "Köpek bahçede koşuyor."})
+
+    response = client.get("/search", params={"q": "kedi"})
+    assert response.json()["results"] == []
+
+    response = client.get("/search", params={"q": "köpek"})
+    doc_ids = {result["doc_id"] for result in response.json()["results"]}
+    assert doc_ids == {"d01"}
+
+
+def _count_distributed_search_calls(monkeypatch) -> dict[str, int]:
+    """Counts how many times `distributed_search` is ACTUALLY called — on
+    a cache hit this function should never be called, which is a more
+    reliable proof that "the cache genuinely did its job" than timing.
     """
-    sayac = {"n": 0}
-    orijinal = app_modulu.dagitik_ara
+    counter = {"n": 0}
+    original = app_module.distributed_search
 
-    async def sayan(*args, **kwargs):
-        sayac["n"] += 1
-        return await orijinal(*args, **kwargs)
+    async def counting(*args, **kwargs):
+        counter["n"] += 1
+        return await original(*args, **kwargs)
 
-    monkeypatch.setattr(app_modulu, "dagitik_ara", sayan)
-    return sayac
+    monkeypatch.setattr(app_module, "distributed_search", counting)
+    return counter
 
 
-def test_ikinci_ozdes_arama_shardlara_hic_gitmiyor(client: TestClient, monkeypatch) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
-    sayac = _dagitik_ara_cagri_sayaci(monkeypatch)
+def test_second_identical_search_never_reaches_the_shards(client: TestClient, monkeypatch) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "kedi masada uyuyor"})
+    counter = _count_distributed_search_calls(monkeypatch)
 
     client.get("/search", params={"q": "kedi"})
     client.get("/search", params={"q": "kedi"})
 
-    assert sayac["n"] == 1
+    assert counter["n"] == 1
 
 
-def test_ikinci_ozdes_arama_olculebilir_sekilde_daha_hizli(
-    client: TestClient, monkeypatch
-) -> None:
-    # :memory: SQLite zaten çok hızlı olduğu için gerçek zamanlama farkı
-    # gürültüde kaybolabilir — bu yüzden shard sorgusunu kasıtlı olarak
-    # yavaşlatıp DoD'nin istediği "ölçülebilir" farkı güvenilir şekilde
-    # üretiyoruz.
-    client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
-    orijinal_sorgula = fan_out_modulu._shard_sorgula
+def test_second_identical_search_is_measurably_faster(client: TestClient, monkeypatch) -> None:
+    # :memory: SQLite is already very fast, so a real timing difference
+    # could get lost in noise — the shard query is deliberately slowed
+    # down to reliably produce the "measurable" difference the DoD asks for.
+    client.post("/index", json={"doc_id": "d01", "text": "kedi masada uyuyor"})
+    original_query = fan_out_module._query_shard
 
-    def yavas_sorgula(*args, **kwargs):
+    def slow_query(*args, **kwargs):
         time.sleep(0.05)
-        return orijinal_sorgula(*args, **kwargs)
+        return original_query(*args, **kwargs)
 
-    monkeypatch.setattr(fan_out_modulu, "_shard_sorgula", yavas_sorgula)
+    monkeypatch.setattr(fan_out_module, "_query_shard", slow_query)
 
-    baslangic = time.perf_counter()
+    start = time.perf_counter()
     client.get("/search", params={"q": "kedi"})
-    ilk_sure = time.perf_counter() - baslangic
+    first_duration = time.perf_counter() - start
 
-    baslangic = time.perf_counter()
+    start = time.perf_counter()
     client.get("/search", params={"q": "kedi"})
-    ikinci_sure = time.perf_counter() - baslangic
+    second_duration = time.perf_counter() - start
 
-    assert ikinci_sure < ilk_sure / 2, (
-        f"cache'li istek en az 2 kat hızlı olmalıydı: ilk={ilk_sure:.4f}s "
-        f"ikinci={ikinci_sure:.4f}s"
+    assert second_duration < first_duration / 2, (
+        f"the cached request should have been at least 2x faster: first={first_duration:.4f}s "
+        f"second={second_duration:.4f}s"
     )
 
 
-def test_yeni_belge_eklenince_cache_gecersiz_olur(client: TestClient, monkeypatch) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
-    sayac = _dagitik_ara_cagri_sayaci(monkeypatch)
+def test_adding_a_new_document_invalidates_the_cache(client: TestClient, monkeypatch) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "kedi masada uyuyor"})
+    counter = _count_distributed_search_calls(monkeypatch)
 
     client.get("/search", params={"q": "kedi"})  # cache miss
     client.get("/search", params={"q": "kedi"})  # cache hit
-    assert sayac["n"] == 1
+    assert counter["n"] == 1
 
-    # Yeni bir belge eklemek, "kedi" sorgusuyla hiç ilgisi olmasa bile
-    # TÜM cache'i geçersiz kılmalı (bkz. cache.py'deki kuşak sayacı notu).
-    client.post("/index", json={"belge_id": "d02", "metin": "alakasız bir cümle"})
+    # Adding a new document should invalidate the ENTIRE cache, even
+    # though it has nothing to do with the "kedi" query (see the
+    # generation-counter note in cache.py).
+    client.post("/index", json={"doc_id": "d02", "text": "alakasız bir cümle"})
 
-    client.get("/search", params={"q": "kedi"})  # cache miss'e dönmeli
-    assert sayac["n"] == 2
-
-
-def test_kismi_basarisiz_sonuc_cachelenmiyor(client: TestClient, monkeypatch) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
-
-    # Bir shard'ı bilerek bozuyoruz — bu belge o shard'da olsun ya da
-    # olmasın, TÜM shard'lar sorgulandığı için basarisiz_shardlar dolacak.
-    ilk_shard_id = next(iter(app.state.shardlar))
-    app.state.shardlar[ilk_shard_id].kapat()
-
-    yanit1 = client.get("/search", params={"q": "kedi"})
-    assert yanit1.json()["basarisiz_shardlar"] == [ilk_shard_id]
-
-    sayac = _dagitik_ara_cagri_sayaci(monkeypatch)
-    yanit2 = client.get("/search", params={"q": "kedi"})
-
-    # Cache'lenmediği için ikinci özdeş istek de GERÇEKTEN shard'lara gitmiş
-    # olmalı (sayaç 0 değil 1) — kısmi başarısız bir sonuç kalıcı "doğru
-    # cevap" gibi önbelleğe düşmüyor.
-    assert sayac["n"] == 1
-    assert yanit2.json()["basarisiz_shardlar"] == [ilk_shard_id]
+    client.get("/search", params={"q": "kedi"})  # should be a cache miss again
+    assert counter["n"] == 2
 
 
-def test_arama_istegi_yapilandirilmis_log_uretir(client: TestClient, caplog) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
+def test_a_partially_failed_result_is_not_cached(client: TestClient, monkeypatch) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "kedi masada uyuyor"})
+
+    # Deliberately break one shard — regardless of whether this document
+    # lives on it, every shard is queried, so failed_shards will be non-empty.
+    first_shard_id = next(iter(app.state.shards))
+    app.state.shards[first_shard_id].close()
+
+    response1 = client.get("/search", params={"q": "kedi"})
+    assert response1.json()["failed_shards"] == [first_shard_id]
+
+    counter = _count_distributed_search_calls(monkeypatch)
+    response2 = client.get("/search", params={"q": "kedi"})
+
+    # Since it wasn't cached, the second identical request must have
+    # ACTUALLY reached the shards too (counter is 1, not 0) — a partially
+    # failed result never gets cached as if it were the permanent
+    # "correct answer".
+    assert counter["n"] == 1
+    assert response2.json()["failed_shards"] == [first_shard_id]
+
+
+def test_search_request_produces_a_structured_log(client: TestClient, caplog) -> None:
+    client.post("/index", json={"doc_id": "d01", "text": "kedi masada uyuyor"})
 
     with caplog.at_level(logging.INFO, logger="shardsearch"):
         client.get("/search", params={"q": "kedi", "limit": 5})
 
-    arama_kayitlari = [k for k in caplog.records if getattr(k, "endpoint", None) == "/search"]
-    assert len(arama_kayitlari) == 1
-    kayit = arama_kayitlari[0]
-    assert kayit.metod == "GET"
-    assert kayit.durum_kodu == 200
-    assert kayit.sorgu == "kedi"
-    assert kayit.cache_hit is False  # ilk çağrı, cache miss olmalı
-    assert kayit.basarisiz_shardlar == []
-    assert kayit.sure_ms >= 0
+    search_records = [r for r in caplog.records if getattr(r, "endpoint", None) == "/search"]
+    assert len(search_records) == 1
+    record = search_records[0]
+    assert record.method == "GET"
+    assert record.status_code == 200
+    assert record.query == "kedi"
+    assert record.cache_hit is False  # first call, should be a cache miss
+    assert record.failed_shards == []
+    assert record.duration_ms >= 0
 
 
-def test_ikinci_ozdes_arama_logunda_cache_hit_true_gorunur(
+def test_second_identical_search_shows_cache_hit_true_in_the_log(
     client: TestClient, caplog
 ) -> None:
-    client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
-    client.get("/search", params={"q": "kedi"})  # cache miss, ısındırma
-    caplog.clear()  # caplog.records tüm test boyunca birikiyor, at_level'a göre sıfırlanmıyor
+    client.post("/index", json={"doc_id": "d01", "text": "kedi masada uyuyor"})
+    client.get("/search", params={"q": "kedi"})  # cache miss, warm-up
+    caplog.clear()  # caplog.records accumulates across the whole test, not reset by at_level
 
     with caplog.at_level(logging.INFO, logger="shardsearch"):
         client.get("/search", params={"q": "kedi"})
 
-    arama_kayitlari = [k for k in caplog.records if getattr(k, "endpoint", None) == "/search"]
-    assert len(arama_kayitlari) == 1
-    assert arama_kayitlari[0].cache_hit is True
+    search_records = [r for r in caplog.records if getattr(r, "endpoint", None) == "/search"]
+    assert len(search_records) == 1
+    assert search_records[0].cache_hit is True
 
 
-def test_gecersiz_sorgu_logunda_400_durum_kodu_gorunur(client: TestClient, caplog) -> None:
+def test_invalid_query_log_shows_status_code_400(client: TestClient, caplog) -> None:
     with caplog.at_level(logging.INFO, logger="shardsearch"):
-        client.get("/search", params={"q": "kedi köpek"})  # operatörsüz yan yana yazım
+        client.get("/search", params={"q": "kedi köpek"})  # implicit juxtaposition, no operator
 
-    arama_kayitlari = [k for k in caplog.records if getattr(k, "endpoint", None) == "/search"]
-    assert len(arama_kayitlari) == 1
-    assert arama_kayitlari[0].durum_kodu == 400
+    search_records = [r for r in caplog.records if getattr(r, "endpoint", None) == "/search"]
+    assert len(search_records) == 1
+    assert search_records[0].status_code == 400
 
 
-def test_index_istegi_yapilandirilmis_log_uretir(client: TestClient, caplog) -> None:
+def test_index_request_produces_a_structured_log(client: TestClient, caplog) -> None:
     with caplog.at_level(logging.INFO, logger="shardsearch"):
-        client.post("/index", json={"belge_id": "d01", "metin": "kedi masada uyuyor"})
+        client.post("/index", json={"doc_id": "d01", "text": "kedi masada uyuyor"})
 
-    index_kayitlari = [k for k in caplog.records if getattr(k, "endpoint", None) == "/index"]
-    assert len(index_kayitlari) == 1
-    assert index_kayitlari[0].metod == "POST"
-    assert index_kayitlari[0].durum_kodu == 201
+    index_records = [r for r in caplog.records if getattr(r, "endpoint", None) == "/index"]
+    assert len(index_records) == 1
+    assert index_records[0].method == "POST"
+    assert index_records[0].status_code == 201

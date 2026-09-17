@@ -1,95 +1,93 @@
-"""Çoklu shard üzerinde paralel arama (fan-out) + sonuç birleştirme.
+"""Parallel search across multiple shards (fan-out) + result merging.
 
-sqlite3 senkron/bloklayan bir kütüphanedir, native asyncio desteği yoktur.
-Bu yüzden her shard sorgusu `asyncio.to_thread()` ile ayrı bir thread'e
-devrediliyor — sadece `async def` yazıp `await` etmek yetmez: gerçek
-paralellik, bloklayan I/O'nun bir thread pool'a devredilmesiyle gelir.
-`asyncio.to_thread()` olmasaydı `asyncio.gather` yine de shard'ları
-SIRAYLA sorgulardı, çünkü hiçbiri event loop'u bırakacak bir `await`
-noktası içermezdi.
+sqlite3 is a synchronous/blocking library with no native asyncio support.
+So each shard query is handed off to a separate thread via
+`asyncio.to_thread()` — just writing `async def` and `await` isn't
+enough on its own; real parallelism comes from delegating blocking I/O to
+a thread pool. Without `asyncio.to_thread()`, `asyncio.gather` would
+still query the shards SEQUENTIALLY, because none of them would contain
+an `await` point that yields the event loop.
 
-IDF her shard'da YEREL hesaplanıyor (bkz. shardsearch.scoring.bm25) —
-Elasticsearch'ün varsayılan davranışı ile aynı, global istatistik toplamak
-için ikinci bir round-trip yok. Bu, tek-node sonuçlarından küçük
-sapmalara yol açabilir. GÖZLEM (bkz. tests/unit/test_fan_out.py'deki
-kasıtlı dengesiz dağıtım testi): sapmanın büyüklüğü shard'lar arası TERİM
-DAĞILIMININ dengesine bağlı — bir terimi içeren belgelerin çoğu tek bir
-shard'da toplanmışsa (doğal consistent-hashing dağılımında beklenmez ama
-küçük korpuslarda ya da kötü şanslı hash dağılımında olabilir), o
-shard'ın yerel N'i küçük olduğu için terimin yerel IDF'si global IDF'den
-belirgin şekilde sapar. Büyük, terim dağılımı dengeli korpuslarda bu etki
-küçülür (büyük sayılar yasası).
+IDF is computed LOCALLY per shard (see shardsearch.scoring.bm25) — the
+same default behavior as Elasticsearch, avoiding a second round-trip to
+gather global statistics. This can cause small deviations from single-node
+results. OBSERVATION (see the deliberately unbalanced distribution test in
+tests/unit/test_fan_out.py): the size of the deviation depends on how
+balanced the TERM DISTRIBUTION is across shards — if most documents
+containing a term happen to land on a single shard (unlikely under normal
+consistent-hashing distribution, but possible with small corpora or an
+unlucky hash spread), that shard's local N is small, so the term's local
+IDF diverges noticeably from the global IDF. This effect shrinks in
+large, term-balanced corpora (the law of large numbers).
 
-Hata toleransı: bir shard sorgu sırasında hata verirse (bağlantı sorunu,
-vb.) TÜM arama başarısız olmaz — o shard'ın belgeleri sonuçtan SESSİZCE
-DEĞİL, `basarisiz_shardlar` listesinde AÇIKÇA raporlanarak düşer. Yani bu
-istemciye "az sonuç ama neden az olduğu bilinmiyor" değil, "şu shard(lar)
-cevap veremedi" bilgisini taşıyan kısmi bir sonuçtur.
+Fault tolerance: if a shard errors out during a query (connection issue,
+etc.) the ENTIRE search does not fail — that shard's documents drop out
+of the result NOT silently, but explicitly reported in `failed_shards`.
+So the client gets a partial result that says "these shard(s) couldn't
+answer," not just "fewer results than expected, cause unknown."
 """
 
 import asyncio
 from dataclasses import dataclass, field
 
-from shardsearch.query import ayristir, degerlendir, terimleri_topla
-from shardsearch.query.ast import SorguDugumu
-from shardsearch.scoring.bm25 import bm25_skoru
-from shardsearch.storage import SqliteTersIndeks
+from shardsearch.query import collect_terms, evaluate, parse
+from shardsearch.query.ast import QueryNode
+from shardsearch.scoring.bm25 import bm25_score
+from shardsearch.storage import SqliteInvertedIndex
 
 
 @dataclass
-class DagitikSonuc:
-    sonuclar: list[tuple[str, float]]
-    basarisiz_shardlar: list[str] = field(default_factory=list)
+class DistributedResult:
+    results: list[tuple[str, float]]
+    failed_shards: list[str] = field(default_factory=list)
 
 
-def _shard_sorgula(
-    indeks: SqliteTersIndeks, agac: SorguDugumu, sorgu_terimleri: list[str]
+def _query_shard(
+    index: SqliteInvertedIndex, tree: QueryNode, query_terms: list[str]
 ) -> list[tuple[str, float]]:
-    """Tek bir shard'da SENKRON sorgulama — asyncio.to_thread ile çağrılır."""
-    aday_belgeler = degerlendir(agac, indeks)
-    return [
-        (belge_id, bm25_skoru(indeks, sorgu_terimleri, belge_id)) for belge_id in aday_belgeler
-    ]
+    """SYNCHRONOUS query against a single shard — called via asyncio.to_thread."""
+    candidate_docs = evaluate(tree, index)
+    return [(doc_id, bm25_score(index, query_terms, doc_id)) for doc_id in candidate_docs]
 
 
-async def _shard_sorgula_guvenli(
-    shard_id: str, indeks: SqliteTersIndeks, agac: SorguDugumu, sorgu_terimleri: list[str]
+async def _query_shard_safely(
+    shard_id: str, index: SqliteInvertedIndex, tree: QueryNode, query_terms: list[str]
 ) -> tuple[str, list[tuple[str, float]], Exception | None]:
     try:
-        sonuc = await asyncio.to_thread(_shard_sorgula, indeks, agac, sorgu_terimleri)
-        return shard_id, sonuc, None
-    except Exception as hata:  # kasıtlı geniş yakalama: hangi hata olursa olsun
-        # bu shard'ı "başarısız" say, diğer shard'ların sonucunu etkilemesin.
-        return shard_id, [], hata
+        result = await asyncio.to_thread(_query_shard, index, tree, query_terms)
+        return shard_id, result, None
+    except Exception as error:  # deliberately broad: whatever the failure
+        # mark this shard as "failed", don't let it affect the other shards' results.
+        return shard_id, [], error
 
 
-async def dagitik_ara(
-    shardlar: dict[str, SqliteTersIndeks], sorgu: str, limit: int = 10
-) -> DagitikSonuc:
-    """`sorgu`yu tüm shard'lara paralel gönderir, sonuçları global BM25
-    skoruna göre birleştirip azalan sırada `limit` kadar döner.
+async def distributed_search(
+    shards: dict[str, SqliteInvertedIndex], query: str, limit: int = 10
+) -> DistributedResult:
+    """Sends `query` to every shard in parallel, merges the results by
+    global BM25 score, and returns the top `limit` in descending order.
 
-    `ayristir()` burada bilerek sadece BİR KEZ çağrılıyor (her shard için
-    değil) — sorgu ayrıştırma hatası (SorguHatasi) shard'lardan bağımsız
-    bir istemci hatasıdır, çağıran (API route) bunu normal şekilde
-    yakalayabilsin diye burada yutulmuyor.
+    `parse()` is deliberately called only ONCE here (not per shard) —
+    a query parse error (QueryError) is a client error independent of the
+    shards, and isn't swallowed here so the caller (the API route) can
+    handle it normally.
     """
-    agac = ayristir(sorgu)
-    sorgu_terimleri = terimleri_topla(agac)
+    tree = parse(query)
+    query_terms = collect_terms(tree)
 
-    gorevler = [
-        _shard_sorgula_guvenli(shard_id, indeks, agac, sorgu_terimleri)
-        for shard_id, indeks in shardlar.items()
+    tasks = [
+        _query_shard_safely(shard_id, index, tree, query_terms)
+        for shard_id, index in shards.items()
     ]
-    sonuclar_ham = await asyncio.gather(*gorevler)
+    raw_results = await asyncio.gather(*tasks)
 
-    tum_sonuclar: list[tuple[str, float]] = []
-    basarisiz_shardlar: list[str] = []
-    for shard_id, sonuc, hata in sonuclar_ham:
-        if hata is not None:
-            basarisiz_shardlar.append(shard_id)
+    all_results: list[tuple[str, float]] = []
+    failed_shards: list[str] = []
+    for shard_id, result, error in raw_results:
+        if error is not None:
+            failed_shards.append(shard_id)
             continue
-        tum_sonuclar.extend(sonuc)
+        all_results.extend(result)
 
-    tum_sonuclar.sort(key=lambda cift: (-cift[1], cift[0]))
-    return DagitikSonuc(sonuclar=tum_sonuclar[:limit], basarisiz_shardlar=basarisiz_shardlar)
+    all_results.sort(key=lambda pair: (-pair[1], pair[0]))
+    return DistributedResult(results=all_results[:limit], failed_shards=failed_shards)

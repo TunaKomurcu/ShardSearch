@@ -1,15 +1,14 @@
-"""Faz 10: yapılandırılmış (JSON) log.
+"""Structured (JSON) logging.
 
-Yeni bir bağımlılık (structlog, python-json-logger vb.) eklemek yerine
-Python'un yerleşik `logging` modülünü özel bir `Formatter` ile
-kullanıyoruz — JSON log formatlamak aslında sadece bir dict'i
-`json.dumps` ile satıra çevirmekten ibaret, ayrı bir kütüphane
-gerektirecek kadar karmaşık değil, ve "sıfırdan anlama" hedefiyle daha
-uyumlu.
+Rather than adding a new dependency (structlog, python-json-logger,
+etc.), Python's built-in `logging` module is used with a custom
+`Formatter` — formatting a log line as JSON really just means turning a
+dict into a line with `json.dumps`, not complex enough to need a separate
+library, and more in the spirit of understanding it from scratch.
 
-Neden stdout: bu bir konteynerize/prod ortamda log toplama sisteminin
-(ör. bir log shipper) stdin'den okuyacağı varsayılan yer — dosyaya yazıp
-rotasyon yönetmek bu fazın kapsamı değil.
+Why stdout: in a containerized/production environment this is the
+default place a log collection system (e.g. a log shipper) reads from —
+writing to a file and managing rotation is out of scope here.
 """
 
 import json
@@ -17,33 +16,31 @@ import logging
 import sys
 from typing import Any
 
-LOGGER_ADI = "shardsearch"
+LOGGER_NAME = "shardsearch"
 
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        satir: dict[str, Any] = {
-            "zaman": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
-            "seviye": record.levelname,
-            "mesaj": record.getMessage(),
+        line: dict[str, Any] = {
+            "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "message": record.getMessage(),
         }
-        # logger.info(..., extra={...}) ile eklenen alanlar (endpoint,
-        # sure_ms, vb.) LogRecord'un normal attribute'ları arasına
-        # karışır — bunları ayırt etmek için "beklenen" attribute
-        # kümesiyle farkını alıyoruz.
-        standart_alanlar = logging.LogRecord(
-            "", 0, "", 0, "", (), None
-        ).__dict__.keys()
-        for anahtar, deger in record.__dict__.items():
-            if anahtar not in standart_alanlar:
-                satir[anahtar] = deger
-        return json.dumps(satir, ensure_ascii=False, default=str)
+        # Fields added via logger.info(..., extra={...}) (endpoint,
+        # duration_ms, etc.) end up mixed in among LogRecord's normal
+        # attributes — diff against the "expected" attribute set to tell
+        # them apart.
+        standard_fields = logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
+        for key, value in record.__dict__.items():
+            if key not in standard_fields:
+                line[key] = value
+        return json.dumps(line, ensure_ascii=False, default=str)
 
 
-def logging_kur() -> None:
-    logger = logging.getLogger(LOGGER_ADI)
+def setup_logging() -> None:
+    logger = logging.getLogger(LOGGER_NAME)
     if logger.handlers:
-        return  # zaten kurulmuş (ör. testlerde tekrar tekrar çağrılmasın)
+        return  # already set up (e.g. avoid re-adding handlers across repeated test calls)
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)
@@ -51,22 +48,22 @@ def logging_kur() -> None:
     logger.propagate = False
 
 
-def istek_logla(
+def log_request(
     logger: logging.Logger,
     *,
     endpoint: str,
-    metod: str,
-    sure_ms: float,
-    durum_kodu: int,
-    **ekstra: Any,
+    method: str,
+    duration_ms: float,
+    status_code: int,
+    **extra: Any,
 ) -> None:
     logger.info(
-        "istek",
+        "request",
         extra={
             "endpoint": endpoint,
-            "metod": metod,
-            "sure_ms": round(sure_ms, 2),
-            "durum_kodu": durum_kodu,
-            **ekstra,
+            "method": method,
+            "duration_ms": round(duration_ms, 2),
+            "status_code": status_code,
+            **extra,
         },
     )

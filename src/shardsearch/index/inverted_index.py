@@ -1,20 +1,20 @@
-"""Bellek içi ters indeks.
+"""In-memory inverted index.
 
-Postings listeleri her zaman belge_id'ye göre SIRALI tutulur (ekleme
-anında bisect ile doğru konuma yerleştirilir). Bunun nedeni bu fazda
-değil, ileride: Faz 5'teki AND kesişimi ve Faz 8'deki dağıtık sonuç
-birleştirmesi, iki sıralı listeyi O(n) taramayla kesiştirmeyi/birleştirmeyi
-varsayacak. Sıralamayı en başta (ekleme anında) garanti etmek, o fazlarda
-"zaten sıralı" varsayımını sorgusuz kullanabilmemizi sağlıyor.
+Postings lists are always kept SORTED by doc_id (new entries are placed
+at the right position with bisect on insert). The reason isn't needed by
+this phase itself, but by later ones: the AND intersection in the query
+evaluator and the distributed result merge both assume two sorted lists
+can be intersected/merged in O(n). Guaranteeing the order at insert time
+means those later stages can rely on "already sorted" without re-checking.
 
-belge_ekle() upsert'tür: aynı belge_id ile tekrar çağrılırsa, o belgeye ait
-önceki tüm postings'ler silinip metin sıfırdan indekslenir — belge
-güncellendiğinde eski haliyle yeni hali karışmasın diye.
+add_document() is an upsert: calling it again with the same doc_id
+removes every previous posting for that document and re-indexes the text
+from scratch, so an updated document's old and new content never mix.
 
-Belge uzunlukları ve toplam uzunluk (Faz 3'te BM25'in ihtiyaç duyduğu
-ortalama belge uzunluğu için) her ekleme/silmede artımlı olarak
-güncellenir — ortalama_belge_uzunlugu() her çağrıda tüm belgeleri
-tarayıp toplamak yerine O(1)'de tek bölme işlemiyle hesaplanır.
+Document lengths and the running total length (needed for BM25's average
+document length) are updated incrementally on every add/remove —
+average_document_length() is a single O(1) division instead of scanning
+every document on each call.
 """
 
 import bisect
@@ -23,59 +23,59 @@ from shardsearch.index.postings import Posting
 from shardsearch.tokenizer import tokenize
 
 
-class TersIndeks:
+class InvertedIndex:
     def __init__(self) -> None:
         self._index: dict[str, list[Posting]] = {}
-        # upsert sırasında bir belgenin hangi token'larda postingi olduğunu
-        # bulmak için: her token için tüm index'i taramamak amacıyla tutulur.
-        self._belge_tokenlari: dict[str, set[str]] = {}
-        self._belge_uzunluklari: dict[str, int] = {}
-        self._belge_metinleri: dict[str, str] = {}
-        self._toplam_belge_uzunlugu: int = 0
+        # Tracks which tokens a document has postings for, so upsert can
+        # remove them without scanning the whole index for every token.
+        self._document_tokens: dict[str, set[str]] = {}
+        self._document_lengths: dict[str, int] = {}
+        self._document_texts: dict[str, str] = {}
+        self._total_document_length: int = 0
 
-    def belge_ekle(self, belge_id: str, metin: str) -> None:
-        if belge_id in self._belge_tokenlari:
-            self._belgeyi_sil(belge_id)
+    def add_document(self, doc_id: str, text: str) -> None:
+        if doc_id in self._document_tokens:
+            self._remove_document(doc_id)
 
-        tokenler = tokenize(metin)
-        pozisyonlar_by_token: dict[str, list[int]] = {}
-        for pozisyon, token in enumerate(tokenler):
-            pozisyonlar_by_token.setdefault(token, []).append(pozisyon)
+        tokens = tokenize(text)
+        positions_by_token: dict[str, list[int]] = {}
+        for position, token in enumerate(tokens):
+            positions_by_token.setdefault(token, []).append(position)
 
-        self._belge_tokenlari[belge_id] = set(pozisyonlar_by_token.keys())
-        self._belge_uzunluklari[belge_id] = len(tokenler)
-        self._belge_metinleri[belge_id] = metin
-        self._toplam_belge_uzunlugu += len(tokenler)
-        for token, pozisyonlar in pozisyonlar_by_token.items():
+        self._document_tokens[doc_id] = set(positions_by_token.keys())
+        self._document_lengths[doc_id] = len(tokens)
+        self._document_texts[doc_id] = text
+        self._total_document_length += len(tokens)
+        for token, positions in positions_by_token.items():
             postings = self._index.setdefault(token, [])
-            yeni_posting = Posting(belge_id, len(pozisyonlar), pozisyonlar)
-            idx = bisect.bisect_left(postings, belge_id, key=lambda p: p.belge_id)
-            postings.insert(idx, yeni_posting)
+            new_posting = Posting(doc_id, len(positions), positions)
+            idx = bisect.bisect_left(postings, doc_id, key=lambda p: p.doc_id)
+            postings.insert(idx, new_posting)
 
-    def _belgeyi_sil(self, belge_id: str) -> None:
-        for token in self._belge_tokenlari[belge_id]:
-            postings = [p for p in self._index[token] if p.belge_id != belge_id]
+    def _remove_document(self, doc_id: str) -> None:
+        for token in self._document_tokens[doc_id]:
+            postings = [p for p in self._index[token] if p.doc_id != doc_id]
             if postings:
                 self._index[token] = postings
             else:
                 del self._index[token]
-        del self._belge_tokenlari[belge_id]
-        self._toplam_belge_uzunlugu -= self._belge_uzunluklari.pop(belge_id)
-        del self._belge_metinleri[belge_id]
+        del self._document_tokens[doc_id]
+        self._total_document_length -= self._document_lengths.pop(doc_id)
+        del self._document_texts[doc_id]
 
-    def postings_getir(self, token: str) -> list[Posting]:
+    def get_postings(self, token: str) -> list[Posting]:
         return self._index.get(token, [])
 
-    def belge_sayisi(self) -> int:
-        return len(self._belge_tokenlari)
+    def document_count(self) -> int:
+        return len(self._document_tokens)
 
-    def belge_uzunlugu(self, belge_id: str) -> int:
-        return self._belge_uzunluklari[belge_id]
+    def document_length(self, doc_id: str) -> int:
+        return self._document_lengths[doc_id]
 
-    def belge_metni(self, belge_id: str) -> str:
-        return self._belge_metinleri[belge_id]
+    def document_text(self, doc_id: str) -> str:
+        return self._document_texts[doc_id]
 
-    def ortalama_belge_uzunlugu(self) -> float:
-        if not self._belge_tokenlari:
+    def average_document_length(self) -> float:
+        if not self._document_tokens:
             return 0.0
-        return self._toplam_belge_uzunlugu / len(self._belge_tokenlari)
+        return self._total_document_length / len(self._document_tokens)

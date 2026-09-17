@@ -1,39 +1,42 @@
-"""Faz 10: Locust yük testi senaryosu.
+"""Locust load-test scenario.
 
-Gerçekçi bir okuma-ağırlıklı dağılım: %90 GET /search, %10 POST /index
-(çoğu arama motorunun gerçek trafiği bu şekildedir). Arama tarafında
-BİLEREK iki tür sorgu karıştırılıyor:
-  - %60 ihtimalle küçük bir "popüler sorgu" havuzundan (cache hit'i
-    gerçekten sınamak için — Faz 9'un cache-aside'ının etkisini görmek
-    istiyorsak, hep aynı sorguları tekrar tekrar sormamız lazım)
-  - %40 ihtimalle rastgele TEK kelimelik bir sorgu (cache miss, gerçek
-    shard hesaplamasını zorlar) — bilerek TEK kelime seçildi, iki kelimeyi
-    boşlukla yan yana yazmak (ör. "kedi köpek") Faz 5'in kuralı gereği
-    parse hatası verir (bkz. docs/known-limitations.md), yük testinin
-    "arama gecikmesi" ölçümünü anlamsız 400 hatalarıyla kirletmesin diye.
+A realistic read-heavy mix: 90% GET /search, 10% POST /index (roughly how
+most search engines see traffic in practice). On the search side, two
+kinds of queries are DELIBERATELY mixed:
+  - 60% chance of a query from a small "popular query" pool (to genuinely
+    exercise cache hits — to see the effect of the cache-aside pattern,
+    the same queries need to be asked repeatedly)
+  - 40% chance of a random SINGLE word (a cache miss, forcing a real
+    shard computation) — a single word is used on purpose: writing two
+    words side by side with a space (e.g. "cat dog") is a parse error
+    under the parser's rule (see docs/known-limitations.md), and that
+    would pollute the "search latency" measurement with meaningless 400
+    errors.
 
-Test başında (`test_start` event'i, HER kullanıcıda değil TEK SEFER)
-küçük bir sentetik korpus indeksleniyor. Wikipedia korpusu gerekmiyor —
-yük testi hacim/gecikme ölçüyor, alaka düzeyini değil.
+At the start of the test (the `test_start` event, ONCE, not once per
+user) a small synthetic corpus is indexed. A Wikipedia-scale corpus isn't
+needed here — the load test measures throughput/latency, not relevance.
 
-Bu ortamda gerçek Redis yok (bkz. docs/known-limitations.md); canlı
-sunucu `redis://localhost:6379/0`'a bağlanmaya çalışıp başarısız olacak
-ve AramaCache bunu sessizce yutup cache'siz çalışacak (Faz 9'un
-tasarladığı, test ettiği davranış). Yani bu koşu "cache'siz" senaryoyu
-yansıtıyor — asıl amaç zaten threading.Lock'un gerçek eşzamanlı yük
-altındaki davranışını ölçmek, bunun için cache'e ihtiyaç yok.
+There's no real Redis in this environment (see docs/known-limitations.md);
+the live server will try to connect to `redis://localhost:6379/0`, fail,
+and SearchCache will silently swallow that and run without a cache (the
+behavior it was designed and tested for). So this run reflects the
+"cacheless" scenario — which is fine, since the actual goal here is
+measuring how the SQLite lock behaves under real concurrent load, and
+that doesn't need the cache.
 
-ÖNEMLİ ortam notu (bkz. docs/known-limitations.md): bu geliştirme
-oturumunda Python'dan (requests/http.client, fark etmiyor) başlatılan HER
-HTTP bağlantısına ~4 saniyelik sabit bir gecikme biniyor — curl.exe
-etkilenmiyor, ham TCP bağlantısı da hızlı, sadece Python'un HTTP
-istek/yanıt döngüsü etkileniyor. Ölçüldü: bu gecikme EŞZAMANLI isteklerde
-ÇAKIŞIYOR (10 paralel istek de toplam ~4.2sn sürüyor, 41sn değil) — yani
-gerçek bir sunucu darboğazı değil, bu oturuma özgü sabit bir ortam
-artefaktı. Bu yüzden mutlak gecikme sayıları (Locust'un raporladığı ham
-ms değerleri) bu ortamda GERÇEK UYGULAMA GECİKMESİNİ YANSITMIYOR — asıl
-anlamlı olan, yükün artmasıyla p99/p50 ORANININ nasıl değiştiği (göreli
-karşılaştırma), mutlak değerler değil.
+IMPORTANT environment note (see docs/known-limitations.md): in this
+particular development environment, every HTTP connection opened from
+Python (requests/http.client, doesn't matter which) carries a fixed ~4
+second delay — curl.exe is unaffected, and a raw TCP connection is also
+fast; only Python's HTTP request/response cycle is affected. Measured:
+this delay OVERLAPS across concurrent requests (10 parallel requests
+still take a total of ~4.2s, not 41s) — so it's not a real server
+bottleneck, just a fixed environment artifact specific to this session.
+Because of this, the absolute latency numbers Locust reports in this
+environment do NOT reflect the real application latency — what's
+meaningful is how the p99/p50 RATIO changes as load increases (a relative
+comparison), not the absolute values.
 """
 
 import concurrent.futures
@@ -42,56 +45,57 @@ import random
 import requests
 from locust import HttpUser, between, events, task
 
-KELIME_HAVUZU = [
+WORD_POOL = [
     "kedi", "köpek", "kuş", "balık", "aslan", "kaplan", "ayı", "tilki",
     "orman", "deniz", "gökyüzü", "güneş", "yıldız", "bulut", "yağmur",
     "şehir", "sokak", "araba", "bilgisayar", "kitap", "müzik",
     "sanat", "bilim", "teknoloji", "doğa", "hayvan", "bitki", "çiçek",
 ]  # fmt: skip
 
-POPULER_SORGULAR = ["kedi", "köpek", "kedi OR köpek", "kedi AND köpek", '"kedi köpek"']
+POPULAR_QUERIES = ["kedi", "köpek", "kedi OR köpek", "kedi AND köpek", '"kedi köpek"']
 
-TOHUM_BELGE_SAYISI = 200
+SEED_DOCUMENT_COUNT = 200
 
 
-def _rastgele_cumle(kelime_sayisi: int = 6) -> str:
-    return " ".join(random.choices(KELIME_HAVUZU, k=kelime_sayisi))
+def _random_sentence(word_count: int = 6) -> str:
+    return " ".join(random.choices(WORD_POOL, k=word_count))
 
 
 @events.test_start.add_listener
-def _corpus_tohumla(environment, **kwargs) -> None:
-    # Bilerek PARALEL: bu geliştirme ortamında Python'dan başlatılan her
-    # HTTP bağlantısına sabit bir gecikme biniyor (bkz.
-    # docs/known-limitations.md) — sıralı 200 istek dakikalarca sürerdi.
-    # Bu gecikme eşzamanlı isteklerde ÇAKIŞTIĞI için (ölçülüp doğrulandı)
-    # ThreadPoolExecutor ile paralel atmak tohumlamayı saniyelere indiriyor.
-    def _tek_tohum(i: int) -> None:
+def _seed_corpus(environment, **kwargs) -> None:
+    # Deliberately PARALLEL: every HTTP connection opened from Python in
+    # this development environment carries a fixed delay (see
+    # docs/known-limitations.md) — 200 sequential requests would take
+    # minutes. Since this delay overlaps across concurrent requests
+    # (measured and confirmed), seeding via a ThreadPoolExecutor brings it
+    # down to seconds.
+    def _seed_one(i: int) -> None:
         requests.post(
             f"{environment.host}/index",
-            json={"belge_id": f"tohum-{i}", "metin": _rastgele_cumle()},
+            json={"doc_id": f"seed-{i}", "text": _random_sentence()},
             timeout=30,
         )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as havuz:
-        list(havuz.map(_tek_tohum, range(TOHUM_BELGE_SAYISI)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as pool:
+        list(pool.map(_seed_one, range(SEED_DOCUMENT_COUNT)))
 
 
-class AramaKullanicisi(HttpUser):
+class SearchUser(HttpUser):
     wait_time = between(0.05, 0.3)
 
     @task(9)
-    def ara(self) -> None:
+    def search(self) -> None:
         if random.random() < 0.6:
-            sorgu = random.choice(POPULER_SORGULAR)
+            query = random.choice(POPULAR_QUERIES)
         else:
-            sorgu = random.choice(KELIME_HAVUZU)  # tek kelime, her zaman geçerli sözdizimi
-        self.client.get("/search", params={"q": sorgu, "limit": 10}, name="/search")
+            query = random.choice(WORD_POOL)  # single word, always valid syntax
+        self.client.get("/search", params={"q": query, "limit": 10}, name="/search")
 
     @task(1)
-    def index_belge(self) -> None:
-        belge_id = f"yuk-{random.randint(0, 10_000_000)}"
+    def index_document(self) -> None:
+        doc_id = f"load-{random.randint(0, 10_000_000)}"
         self.client.post(
             "/index",
-            json={"belge_id": belge_id, "metin": _rastgele_cumle()},
+            json={"doc_id": doc_id, "text": _random_sentence()},
             name="/index",
         )

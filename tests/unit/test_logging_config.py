@@ -1,62 +1,62 @@
-"""Faz 10 testleri: JSON log formatlayıcı ve yardımcı fonksiyonlar.
+"""Phase 10 tests: the JSON log formatter and its helper functions.
 
-Gerçek stdout çıktısını yakalamak yerine (handler import anında sys.stdout
-referansını sabitliyor, pytest'in capsys'i bunu değiştiremez) doğrudan
-JsonFormatter.format() çağrısının ürettiği string'i ve istek_logla()'nın
-oluşturduğu LogRecord'un attribute'larını (caplog ile) doğruluyoruz.
+Rather than capturing real stdout (the handler pins a reference to
+sys.stdout at import time, which pytest's capsys can't intercept), we
+directly verify the string produced by JsonFormatter.format() and the
+attributes of the LogRecord that log_request() builds (via caplog).
 """
 
 import json
 import logging
 
-from shardsearch.api.logging_config import JsonFormatter, istek_logla
+from shardsearch.api.logging_config import JsonFormatter, log_request
 
 
-def _kayit_olustur(ekstra: dict | None = None) -> logging.LogRecord:
+def _make_record(extra: dict | None = None) -> logging.LogRecord:
     logger = logging.getLogger("test_formatter")
     return logger.makeRecord(
-        "test_formatter", logging.INFO, __file__, 0, "mesaj", (), None, extra=ekstra
+        "test_formatter", logging.INFO, __file__, 0, "message", (), None, extra=extra
     )
 
 
-def test_json_formatter_gecerli_json_uretir() -> None:
-    cikti = JsonFormatter().format(_kayit_olustur())
-    ayristirilmis = json.loads(cikti)  # geçerli JSON değilse burada patlar
-    assert ayristirilmis["mesaj"] == "mesaj"
-    assert ayristirilmis["seviye"] == "INFO"
-    assert "zaman" in ayristirilmis
+def test_json_formatter_produces_valid_json() -> None:
+    output = JsonFormatter().format(_make_record())
+    parsed = json.loads(output)  # blows up here if not valid JSON
+    assert parsed["message"] == "message"
+    assert parsed["level"] == "INFO"
+    assert "time" in parsed
 
 
-def test_json_formatter_ekstra_alanlari_tasir() -> None:
-    kayit = _kayit_olustur(ekstra={"endpoint": "/search", "sure_ms": 12.3})
-    cikti = json.loads(JsonFormatter().format(kayit))
-    assert cikti["endpoint"] == "/search"
-    assert cikti["sure_ms"] == 12.3
+def test_json_formatter_carries_extra_fields() -> None:
+    record = _make_record(extra={"endpoint": "/search", "duration_ms": 12.3})
+    output = json.loads(JsonFormatter().format(record))
+    assert output["endpoint"] == "/search"
+    assert output["duration_ms"] == 12.3
 
 
-def test_json_formatter_turkce_karakterleri_bozmadan_yazar() -> None:
-    kayit = _kayit_olustur(ekstra={"sorgu": "kedi AND köpek"})
-    cikti = JsonFormatter().format(kayit)
-    assert "köpek" in cikti  # ensure_ascii=False: ö değil, gerçek harf
+def test_json_formatter_writes_turkish_characters_without_mangling_them() -> None:
+    record = _make_record(extra={"query": "kedi AND köpek"})
+    output = JsonFormatter().format(record)
+    assert "köpek" in output  # ensure_ascii=False: a real letter, not an escape sequence
 
 
-def test_istek_logla_beklenen_alanlarla_cagirir(caplog) -> None:
-    logger = logging.getLogger("test_istek_logla")
+def test_log_request_is_called_with_the_expected_fields(caplog) -> None:
+    logger = logging.getLogger("test_log_request")
     logger.setLevel(logging.INFO)
-    with caplog.at_level(logging.INFO, logger="test_istek_logla"):
-        istek_logla(
+    with caplog.at_level(logging.INFO, logger="test_log_request"):
+        log_request(
             logger,
             endpoint="/index",
-            metod="POST",
-            sure_ms=5.0,
-            durum_kodu=201,
-            belge_id="d01",
+            method="POST",
+            duration_ms=5.0,
+            status_code=201,
+            doc_id="d01",
         )
 
     assert len(caplog.records) == 1
-    kayit = caplog.records[0]
-    assert kayit.endpoint == "/index"
-    assert kayit.metod == "POST"
-    assert kayit.sure_ms == 5.0
-    assert kayit.durum_kodu == 201
-    assert kayit.belge_id == "d01"
+    record = caplog.records[0]
+    assert record.endpoint == "/index"
+    assert record.method == "POST"
+    assert record.duration_ms == 5.0
+    assert record.status_code == 201
+    assert record.doc_id == "d01"

@@ -1,21 +1,21 @@
-# Referans Korpus — Nasıl Elde Edilir
+# Reference Corpus — How to Obtain It
 
-SPEC.md'de belirtildiği gibi, doğrulama ve göz-kararı değerlendirme için
-sentetik değil **gerçek bir Türkçe metin korpusu** kullanılacak: Türkçe
-Wikipedia'dan alınmış 200-500 makale.
+As noted in SPEC.md, a real **Turkish text corpus** is used for
+validation and eyeballed relevance checks rather than synthetic data:
+200-500 articles from Turkish Wikipedia.
 
-`data/corpus/` klasörü `.gitignore` içinde — bu veri repoya commit edilmez,
-her geliştirici kendi makinesinde aşağıdaki adımlarla oluşturur.
+`data/corpus/` is listed in `.gitignore` — this data is not committed to
+the repo; each developer generates it locally following the steps below.
 
-## Yöntem (Faz 2/3'te uygulanacak)
+## Method
 
-1. Türkçe Wikipedia dump'ından (`trwiki-latest-pages-articles.xml.bz2`,
-   https://dumps.wikimedia.org/trwiki/latest/) rastgele 200-500 makale seç.
-2. `wikiextractor` (veya benzeri) ile düz metne çevir.
-3. Her makaleyi `data/corpus/<belge_id>.txt` olarak kaydet — bir dosya bir belge.
-4. Kaynak/lisans notu: Wikipedia içeriği CC BY-SA 4.0 lisanslıdır, sadece
-   yerel geliştirme/test amaçlı kullanılır, repoya dahil edilmez.
+1. Pick 200-500 random articles from a Turkish Wikipedia dump
+   (`trwiki-latest-pages-articles.xml.bz2`,
+   https://dumps.wikimedia.org/trwiki/latest/).
+2. Convert to plain text with `wikiextractor` (or similar).
+3. Save each article as `data/corpus/<doc_id>.txt` — one file per document.
+4. Source/license note: Wikipedia content is licensed CC BY-SA 4.0, used
+   here only for local development/testing, and not included in the repo.
 
-Bu adımlar Faz 2 (Ters İndeks) ve Faz 3 (BM25 doğrulama) sırasında,
-korpus gerçekten kullanılmaya başlandığında bir script (`scripts/fetch_corpus.py`
-gibi) ile otomatize edilecek. Faz 0'da sadece klasör iskeleti hazır.
+These steps can be automated with a script (e.g.
+`scripts/fetch_corpus.py`) once the corpus is actually put to use.

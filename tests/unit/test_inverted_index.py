@@ -1,17 +1,17 @@
-"""Faz 2 testleri: TersIndeks doğru postings üretiyor mu.
+"""Phase 2 tests: does InvertedIndex produce correct postings.
 
-Beklenen frekans/pozisyon değerleri, her belgenin tokenize() çıktısı elle
-çıkarılarak hesaplandı (bkz. Faz 2 planı).
+Expected frequency/position values were computed by hand by walking
+through tokenize()'s output for each document.
 """
 
 import pytest
 
-from shardsearch.index import Posting, TersIndeks
+from shardsearch.index import InvertedIndex, Posting
 
-# 12 kısa belgeden oluşan küçük test korpusu. "kedi" kelimesi kasıtlı
-# olarak farklı belgelerde farklı frekans/pozisyonlarda geçecek şekilde
-# seçildi, geri kalanlar postings listesine gürültü katmak için var.
-KORPUS = {
+# A small 12-document test corpus. "cat" ("kedi") was deliberately chosen
+# to appear in different documents with different frequencies/positions;
+# the rest exist to add noise to the postings list.
+CORPUS = {
     "d01": "Kedi masada uyuyor, sonra kedi yere atladı.",
     "d02": "Köpek bahçede koşuyor.",
     "d03": "Kedi ve köpek birlikte oynuyor.",
@@ -26,8 +26,8 @@ KORPUS = {
     "d12": "Tilki kurnaz bir hayvandır.",
 }
 
-# Elle hesaplanan beklenen "kedi" postings'i, belge_id'ye göre sıralı.
-BEKLENEN_KEDI_POSTINGS = [
+# Hand-computed expected postings for "kedi" ("cat"), sorted by doc_id.
+EXPECTED_KEDI_POSTINGS = [
     Posting("d01", 2, [0, 4]),
     Posting("d03", 1, [0]),
     Posting("d07", 2, [3, 5]),
@@ -35,80 +35,81 @@ BEKLENEN_KEDI_POSTINGS = [
 ]
 
 
-def _indeks_olustur(sirali_belge_idleri: list[str]) -> TersIndeks:
-    indeks = TersIndeks()
-    for belge_id in sirali_belge_idleri:
-        indeks.belge_ekle(belge_id, KORPUS[belge_id])
-    return indeks
+def _build_index(ordered_doc_ids: list[str]) -> InvertedIndex:
+    index = InvertedIndex()
+    for doc_id in ordered_doc_ids:
+        index.add_document(doc_id, CORPUS[doc_id])
+    return index
 
 
-def test_bilinen_kelimenin_postingsleri_dogru() -> None:
-    indeks = _indeks_olustur(list(KORPUS))
-    assert indeks.postings_getir("kedi") == BEKLENEN_KEDI_POSTINGS
+def test_known_word_postings_are_correct() -> None:
+    index = _build_index(list(CORPUS))
+    assert index.get_postings("kedi") == EXPECTED_KEDI_POSTINGS
 
 
-def test_postings_belge_id_karisik_sirayla_eklense_de_sirali_donuyor() -> None:
-    # d07, d01, d10, d03 sırasıyla eklendi ama postings hep belge_id sıralı olmalı —
-    # Faz 5/Faz 8'in sıralı-birleştirme varsayımı bu davranışa dayanıyor.
-    karisik_sira = [
+def test_postings_stay_sorted_regardless_of_insertion_order() -> None:
+    # d07, d01, d10, d03 are added in this order but postings must always
+    # be sorted by doc_id — the sorted-merge assumption used later in the
+    # query evaluator and distributed search relies on this.
+    shuffled_order = [
         "d07", "d02", "d01", "d10", "d05", "d03", "d04", "d06", "d08", "d09", "d11", "d12",
     ]
-    indeks = _indeks_olustur(karisik_sira)
-    assert indeks.postings_getir("kedi") == BEKLENEN_KEDI_POSTINGS
+    index = _build_index(shuffled_order)
+    assert index.get_postings("kedi") == EXPECTED_KEDI_POSTINGS
 
 
-def test_bilinmeyen_token_bos_liste_doner() -> None:
-    indeks = _indeks_olustur(list(KORPUS))
-    assert indeks.postings_getir("boyle_bir_kelime_yok") == []
+def test_unknown_token_returns_empty_list() -> None:
+    index = _build_index(list(CORPUS))
+    assert index.get_postings("no_such_word") == []
 
 
-def test_ayni_belge_id_ile_tekrar_ekleme_upsert_yapar() -> None:
-    indeks = TersIndeks()
-    indeks.belge_ekle("up1", "Kedi köpek kuş.")
+def test_readding_the_same_doc_id_performs_an_upsert() -> None:
+    index = InvertedIndex()
+    index.add_document("up1", "Kedi köpek kuş.")
 
-    # İlk halinde üç token da up1'i içeriyor olmalı
-    assert indeks.postings_getir("kedi") == [Posting("up1", 1, [0])]
-    assert indeks.postings_getir("köpek") == [Posting("up1", 1, [1])]
-    assert indeks.postings_getir("kuş") == [Posting("up1", 1, [2])]
+    # In its first version, all three tokens should have a posting for up1
+    assert index.get_postings("kedi") == [Posting("up1", 1, [0])]
+    assert index.get_postings("köpek") == [Posting("up1", 1, [1])]
+    assert index.get_postings("kuş") == [Posting("up1", 1, [2])]
 
-    # Aynı belge_id ile yeniden eklendiğinde eski içerik tamamen silinmeli
-    indeks.belge_ekle("up1", "Kuş ve balık.")
+    # Re-adding with the same doc_id must fully remove the old content
+    index.add_document("up1", "Kuş ve balık.")
 
-    # Eski içerikte olup yeni içerikte olmayan token'lar için up1 tamamen kaybolmalı
-    assert indeks.postings_getir("kedi") == []
-    assert indeks.postings_getir("köpek") == []
+    # Tokens that were in the old content but not the new one should lose up1 entirely
+    assert index.get_postings("kedi") == []
+    assert index.get_postings("köpek") == []
 
-    # Yeni içerikteki token'lar güncel pozisyonlarla görünmeli
-    assert indeks.postings_getir("kuş") == [Posting("up1", 1, [0])]
-    assert indeks.postings_getir("balık") == [Posting("up1", 1, [2])]
-
-
-def test_belge_sayisi_ve_uzunluk_istatistikleri() -> None:
-    indeks = TersIndeks()
-    assert indeks.belge_sayisi() == 0
-    assert indeks.ortalama_belge_uzunlugu() == 0.0
-
-    indeks.belge_ekle("x", "kedi kedi köpek")  # 3 token
-    indeks.belge_ekle("y", "köpek kuş")  # 2 token
-    indeks.belge_ekle("z", "kedi kuş balık balık hayvan")  # 5 token
-
-    assert indeks.belge_sayisi() == 3
-    assert indeks.belge_uzunlugu("x") == 3
-    assert indeks.belge_uzunlugu("y") == 2
-    assert indeks.belge_uzunlugu("z") == 5
-    assert indeks.ortalama_belge_uzunlugu() == pytest.approx(10 / 3)
-
-    # Upsert sonrası istatistikler güncellenmeli, eski uzunluk toplamdan düşülmeli
-    indeks.belge_ekle("y", "köpek")  # 2 token -> 1 token
-    assert indeks.belge_sayisi() == 3
-    assert indeks.belge_uzunlugu("y") == 1
-    assert indeks.ortalama_belge_uzunlugu() == pytest.approx(9 / 3)
+    # Tokens from the new content should appear with updated positions
+    assert index.get_postings("kuş") == [Posting("up1", 1, [0])]
+    assert index.get_postings("balık") == [Posting("up1", 1, [2])]
 
 
-def test_belge_metni_saklanir_ve_upsert_ile_guncellenir() -> None:
-    indeks = TersIndeks()
-    indeks.belge_ekle("d01", "Kedi masada uyuyor.")
-    assert indeks.belge_metni("d01") == "Kedi masada uyuyor."
+def test_document_count_and_length_stats() -> None:
+    index = InvertedIndex()
+    assert index.document_count() == 0
+    assert index.average_document_length() == 0.0
 
-    indeks.belge_ekle("d01", "Köpek bahçede koşuyor.")
-    assert indeks.belge_metni("d01") == "Köpek bahçede koşuyor."
+    index.add_document("x", "kedi kedi köpek")  # 3 tokens
+    index.add_document("y", "köpek kuş")  # 2 tokens
+    index.add_document("z", "kedi kuş balık balık hayvan")  # 5 tokens
+
+    assert index.document_count() == 3
+    assert index.document_length("x") == 3
+    assert index.document_length("y") == 2
+    assert index.document_length("z") == 5
+    assert index.average_document_length() == pytest.approx(10 / 3)
+
+    # After an upsert, stats should update and the old length subtracted from the total
+    index.add_document("y", "köpek")  # 2 tokens -> 1 token
+    assert index.document_count() == 3
+    assert index.document_length("y") == 1
+    assert index.average_document_length() == pytest.approx(9 / 3)
+
+
+def test_document_text_is_stored_and_updated_on_upsert() -> None:
+    index = InvertedIndex()
+    index.add_document("d01", "Kedi masada uyuyor.")
+    assert index.document_text("d01") == "Kedi masada uyuyor."
+
+    index.add_document("d01", "Köpek bahçede koşuyor.")
+    assert index.document_text("d01") == "Köpek bahçede koşuyor."

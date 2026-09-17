@@ -1,94 +1,95 @@
-"""Faz 5 testleri: sorgu dizgisi doğru ayrıştırma ağacına çevriliyor mu.
+"""Phase 5 tests: does a query string parse into the right tree.
 
-Öncelik kuralı: AND, OR'dan daha sıkı bağlanır — "a AND b OR c" her zaman
-"(a AND b) OR c" olmalı, "a AND (b OR c)" DEĞİL. Bu SQL/genel programlama
-dili kuralıyla tutarlı, kullanıcı için en az şaşırtıcı seçenek.
+Precedence rule: AND binds tighter than OR — "a AND b OR c" must always
+be "(a AND b) OR c", NOT "a AND (b OR c)". This is consistent with
+SQL/general programming language convention and the least surprising
+choice for users.
 """
 
 import pytest
 
-from shardsearch.query import Ifade, SorguHatasi, Terim, Ve, Veya, ayristir
+from shardsearch.query import And, Or, Phrase, QueryError, Term, parse
 
 
-def test_tek_terim() -> None:
-    assert ayristir("kedi") == Terim("kedi")
+def test_single_term() -> None:
+    assert parse("kedi") == Term("kedi")
 
 
-def test_ve_ifadesi() -> None:
-    assert ayristir("kedi AND köpek") == Ve(Terim("kedi"), Terim("köpek"))
+def test_and_expression() -> None:
+    assert parse("kedi AND köpek") == And(Term("kedi"), Term("köpek"))
 
 
-def test_veya_ifadesi() -> None:
-    assert ayristir("kedi OR köpek") == Veya(Terim("kedi"), Terim("köpek"))
+def test_or_expression() -> None:
+    assert parse("kedi OR köpek") == Or(Term("kedi"), Term("köpek"))
 
 
-def test_and_or_kucuk_harfle_de_calisir() -> None:
-    assert ayristir("kedi and köpek") == Ve(Terim("kedi"), Terim("köpek"))
-    assert ayristir("kedi or köpek") == Veya(Terim("kedi"), Terim("köpek"))
+def test_and_or_also_work_lowercase() -> None:
+    assert parse("kedi and köpek") == And(Term("kedi"), Term("köpek"))
+    assert parse("kedi or köpek") == Or(Term("kedi"), Term("köpek"))
 
 
-def test_oncelik_and_or_dan_once_degerlendirilir() -> None:
-    # "a AND b OR c" -> "(a AND b) OR c" — AND daha sıkı bağlanır.
-    beklenen = Veya(Ve(Terim("a"), Terim("b")), Terim("c"))
-    assert ayristir("a AND b OR c") == beklenen
+def test_and_is_evaluated_before_or() -> None:
+    # "a AND b OR c" -> "(a AND b) OR c" — AND binds tighter.
+    expected = Or(And(Term("a"), Term("b")), Term("c"))
+    assert parse("a AND b OR c") == expected
 
 
-def test_oncelik_diger_taraftan_da_gecerli() -> None:
-    # "a OR b AND c" -> "a OR (b AND c)" — aynı kuralın simetrik sonucu.
-    beklenen = Veya(Terim("a"), Ve(Terim("b"), Terim("c")))
-    assert ayristir("a OR b AND c") == beklenen
+def test_precedence_holds_from_the_other_side_too() -> None:
+    # "a OR b AND c" -> "a OR (b AND c)" — the symmetric result of the same rule.
+    expected = Or(Term("a"), And(Term("b"), Term("c")))
+    assert parse("a OR b AND c") == expected
 
 
-def test_parantez_onceligi_degistirebilir() -> None:
-    beklenen = Ve(Terim("a"), Veya(Terim("b"), Terim("c")))
-    assert ayristir("a AND (b OR c)") == beklenen
+def test_parentheses_can_override_precedence() -> None:
+    expected = And(Term("a"), Or(Term("b"), Term("c")))
+    assert parse("a AND (b OR c)") == expected
 
 
-def test_ic_ice_parantez() -> None:
-    beklenen = Veya(Ve(Terim("a"), Terim("b")), Ve(Terim("c"), Terim("d")))
-    assert ayristir("(a AND b) OR (c AND d)") == beklenen
+def test_nested_parentheses() -> None:
+    expected = Or(And(Term("a"), Term("b")), And(Term("c"), Term("d")))
+    assert parse("(a AND b) OR (c AND d)") == expected
 
 
-def test_ifade_ayristirma() -> None:
-    assert ayristir('"kedi köpek"') == Ifade(("kedi", "köpek"))
+def test_phrase_parsing() -> None:
+    assert parse('"kedi köpek"') == Phrase(("kedi", "köpek"))
 
 
-def test_ifade_turkce_normalize_edilir() -> None:
-    # İfade içeriği de tokenize() ile geçiyor: Türkçe İ/ı ve noktalama kuralı
-    assert ayristir('"İstanbul, Ankara"') == Ifade(("istanbul", "ankara"))
+def test_phrase_content_is_normalized_turkish() -> None:
+    # Phrase content also goes through tokenize(): the Turkish İ/ı and punctuation rules apply
+    assert parse('"İstanbul, Ankara"') == Phrase(("istanbul", "ankara"))
 
 
-def test_ifade_ve_terim_birlikte() -> None:
-    beklenen = Ve(Ifade(("kedi", "köpek")), Terim("balık"))
-    assert ayristir('"kedi köpek" AND balık') == beklenen
+def test_phrase_and_term_together() -> None:
+    expected = And(Phrase(("kedi", "köpek")), Term("balık"))
+    assert parse('"kedi köpek" AND balık') == expected
 
 
-def test_terim_turkce_normalize_edilir() -> None:
-    assert ayristir("İSTANBUL") == Terim("istanbul")
+def test_term_content_is_normalized_turkish() -> None:
+    assert parse("İSTANBUL") == Term("istanbul")
 
 
-def test_karmasik_sorgu() -> None:
+def test_complex_query() -> None:
     # "a AND b OR "c d" AND (e OR f)"
     # -> (a AND b) OR ("c d" AND (e OR f))
-    beklenen = Veya(
-        Ve(Terim("a"), Terim("b")),
-        Ve(Ifade(("c", "d")), Veya(Terim("e"), Terim("f"))),
+    expected = Or(
+        And(Term("a"), Term("b")),
+        And(Phrase(("c", "d")), Or(Term("e"), Term("f"))),
     )
-    assert ayristir('a AND b OR "c d" AND (e OR f)') == beklenen
+    assert parse('a AND b OR "c d" AND (e OR f)') == expected
 
 
 @pytest.mark.parametrize(
-    "sorgu",
+    "query",
     [
-        "kedi köpek",  # operatörsüz yan yana yazım — bilinçli olarak desteklenmiyor
-        "kedi AND",  # eksik ikinci terim
-        "AND kedi",  # eksik ilk terim
-        "(kedi AND köpek",  # kapanmamış parantez
-        "kedi AND köpek)",  # fazladan kapanış parantezi
-        "",  # boş sorgu
-        "   ",  # sadece boşluk
+        "kedi köpek",  # implicit juxtaposition with no operator — deliberately unsupported
+        "kedi AND",  # missing second term
+        "AND kedi",  # missing first term
+        "(kedi AND köpek",  # unclosed parenthesis
+        "kedi AND köpek)",  # extra closing parenthesis
+        "",  # empty query
+        "   ",  # whitespace only
     ],
 )
-def test_gecersiz_sorgular_hata_verir(sorgu: str) -> None:
-    with pytest.raises(SorguHatasi):
-        ayristir(sorgu)
+def test_invalid_queries_raise_an_error(query: str) -> None:
+    with pytest.raises(QueryError):
+        parse(query)

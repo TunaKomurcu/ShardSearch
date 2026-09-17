@@ -1,3 +1,3 @@
-from shardsearch.storage.sqlite_index import SqliteTersIndeks
+from shardsearch.storage.sqlite_index import SqliteInvertedIndex
 
-__all__ = ["SqliteTersIndeks"]
+__all__ = ["SqliteInvertedIndex"]

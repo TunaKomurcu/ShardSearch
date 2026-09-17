@@ -1,19 +1,19 @@
-"""Türkçe'ye özel harf küçültme.
+"""Turkish-specific letter lowercasing.
 
-Python'un yerleşik str.lower() İngilizce/Latin kurallarını uygular:
-'I' -> 'i' ve 'İ' -> 'i̇' (i + U+0307 birleşik nokta) üretir. Türkçe'de
-ise I/ı ve İ/i birbirinden bağımsız iki harf çiftidir — 'I'nin küçüğü
-'ı', 'İ'nin küçüğü 'i'dir. Bu farkı gözetmezsek "Işık" (ışık, doğru)
-yerine "işık" (yanlış kelime) üretiriz. Diğer Türkçe harfler (Ç/Ğ/Ö/Ş/Ü)
-zaten standart .lower() ile doğru eşleniyor, bu yüzden sadece I/İ için
-özel durum tanımlamak yeterli.
+Python's built-in str.lower() applies English/Latin casing rules:
+'I' -> 'i' and 'İ' -> 'i̇' (i + U+0307 combining dot above). In Turkish,
+I/ı and İ/i are two independent letter pairs — the lowercase of 'I' is
+'ı', and the lowercase of 'İ' is 'i'. Ignoring this distinction turns
+"Işık" (ışık, correct) into "işık" (a different, incorrect word). The
+other Turkish letters (Ç/Ğ/Ö/Ş/Ü) already map correctly with the
+standard .lower(), so only I/İ need a special case.
 """
 
-_OZEL_BUYUKTEN_KUCUGE = {
+_SPECIAL_UPPER_TO_LOWER = {
     "I": "ı",
     "İ": "i",
 }
 
 
 def turkish_lower(text: str) -> str:
-    return "".join(_OZEL_BUYUKTEN_KUCUGE.get(ch, ch.lower()) for ch in text)
+    return "".join(_SPECIAL_UPPER_TO_LOWER.get(ch, ch.lower()) for ch in text)

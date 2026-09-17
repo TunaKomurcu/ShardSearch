@@ -1,67 +1,87 @@
-# SPEC.md — ShardSearch Proje Spesifikasyonu
+# SPEC.md — ShardSearch Project Specification
 
-## Amaç
+## Purpose
 
-Sıfırdan, dağıtık çalışabilen bir metin arama motoru inşa etmek. Bu **üretime hazır bir Elasticsearch alternatifi değil** — amaç, arama motorlarının temel mekanizmalarını (ters indeks, BM25, sharding, dağıtık sorgu birleştirme) gerçekten anlayarak, kendi elimizle inşa etmek. Öncelik: **doğru çalışan kod değil, anlaşılan kod.**
+Build a distributed-capable text search engine from scratch. This is
+**not a production-ready Elasticsearch alternative** — the goal is to
+truly understand the core mechanisms of search engines (inverted index,
+BM25, sharding, distributed result merging) by building them by hand.
+Priority: **understood code, not just working code.**
 
-## Neden bu proje?
+## Why this project?
 
-- Hash tablosu, BM25, consistent hashing, asyncio, sharding gibi daha önce "kütüphane olarak kullanılan" kavramları, alttaki mekanizmayı gerçekten inşa ederek öğrenmek
-- Alan bilgisi (domain knowledge) gerektirmiyor — tamamen mühendislik derinliği odaklı
-- BM25/hibrit retrieval tecrübesini "kullanıyorum" seviyesinden "neden öyle çalıştığını biliyorum" seviyesine taşımak
+- Learn concepts previously only "used as a library" (hash tables, BM25,
+  consistent hashing, asyncio, sharding) by actually building the
+  underlying mechanism
+- No domain knowledge required — purely focused on engineering depth
+- Move BM25/hybrid retrieval experience from "I use it" to "I know why it
+  works that way"
 
-## Kapsam İçi — Sıfırdan Yazılacak
+## In Scope — Built From Scratch
 
-1. **Tokenizer** — Türkçe-farkında, basit kural tabanlı (gelişmiş morfoloji analizi değil)
-2. **Ters İndeks** — token → (belge_id, frekans, pozisyon listesi) veri yapısı
-3. **BM25 Sıralama Algoritması** — TF, IDF, belge uzunluğu normalizasyonu, elle implementasyon
-4. **Sorgu Ayrıştırıcı** — AND/OR boolean mantık + ifade (phrase) eşleştirme
-5. **Sharding** — consistent hashing ile belge dağıtımı
-6. **Dağıtık Sorgu** — asyncio ile paralel shard sorgulama (fan-out) + sonuç birleştirme (merge)
+1. **Tokenizer** — Turkish-aware, simple rule-based (not advanced
+   morphological analysis)
+2. **Inverted Index** — a token → (doc_id, frequency, position list) data
+   structure
+3. **BM25 Ranking Algorithm** — TF, IDF, document length normalization,
+   implemented by hand
+4. **Query Parser** — AND/OR boolean logic + phrase matching
+5. **Sharding** — document distribution via consistent hashing
+6. **Distributed Query** — parallel shard querying with asyncio (fan-out)
+   + result merging
 
-## Kapsam Dışı — Hazır Araç Kullanılacak veya Hiç Yapılmayacak
+## Out of Scope — Off-the-Shelf Tools or Not Done at All
 
-| Bileşen | Karar | Gerekçe |
+| Component | Decision | Rationale |
 |---|---|---|
-| Web/API katmanı | FastAPI kullan | Framework'ün var oluş sebebi — sıfırdan HTTP sunucusu yazmak kapsam dışı |
-| Kalıcı depolama | SQLite kullan | Kendi B-tree/LSM-tree yazmak ayrı, devasa bir proje |
-| Sorgu cache | Redis kullan | Cache mekanizması zaten ayrı derste işlendi, burada tekrar sıfırdan yazmaya gerek yok |
-| Cluster coordination | Statik, config-tabanlı shard ataması | Raft/Paxos gibi dinamik konsensüs protokolleri kapsam dışı |
-| Türkçe morfolojik analiz | Basit kurallarla başla, ileride opsiyonel Zemberek | Sıfırdan Türkçe stemming ayrı bir NLP araştırma projesi |
-| Vektör/semantik arama | Opsiyonel stretch goal, `hnswlib`/`faiss` kullan | Kendi HNSW'ini yazmak kapsam dışı |
-| Kimlik doğrulama, çoklu-kiracılık | Yok | Bu bir teknik demo, prod SaaS değil |
+| Web/API layer | Use FastAPI | That's exactly what the framework is for — writing an HTTP server from scratch is out of scope |
+| Persistent storage | Use SQLite | Writing a B-tree/LSM-tree is a separate, huge project on its own |
+| Query cache | Use Redis | Caching mechanics were already covered in a separate course, no need to rebuild from scratch here |
+| Cluster coordination | Static, config-file-based shard assignment | Dynamic consensus protocols like Raft/Paxos are out of scope |
+| Turkish morphological analysis | Start with simple rules, optional Zemberek later | Building Turkish stemming from scratch is a separate NLP research project |
+| Vector/semantic search | Optional stretch goal, use `hnswlib`/`faiss` | Writing your own HNSW is out of scope |
+| Authentication, multi-tenancy | None | This is a technical demo, not a production SaaS |
 
-## Mimari (yüksek seviye)
+## Architecture (high level)
 
 ```
-İndeksleme yolu:
-  Belge → Tokenizer (kendi) → Ters İndeks Kurucu (kendi) → SQLite (hazır depolama)
+Indexing path:
+  Document → Tokenizer (ours) → Inverted Index Builder (ours) → SQLite (off-the-shelf storage)
 
-Sorgu yolu:
-  İstemci → FastAPI (hazır) → Sorgu Ayrıştırıcı (kendi) → Shard'lara fan-out (kendi, asyncio)
-    → [Shard 1, Shard 2, Shard 3] (her biri kendi BM25 hesaplar) → Sonuç birleştirme (kendi)
-    → Redis cache (hazır) → Yanıt
+Query path:
+  Client → FastAPI (off-the-shelf) → Query Parser (ours) → fan-out to shards (ours, asyncio)
+    → [Shard 1, Shard 2, Shard 3] (each computes its own BM25) → Result merge (ours)
+    → Redis cache (off-the-shelf) → Response
 ```
 
-## Teknoloji Yığını
+## Tech Stack
 
-- Python 3.12, tip belirteçleriyle (type hints)
-- FastAPI (API katmanı)
-- SQLite (kalıcı depolama)
-- Redis (sorgu cache — Faz 9'dan itibaren)
-- pytest (test), Locust (yük testi — Faz 10'dan itibaren)
-- asyncio (dağıtık fan-out)
+- Python 3.12, fully type-hinted
+- FastAPI (API layer)
+- SQLite (persistent storage)
+- Redis (query cache)
+- pytest (testing), Locust (load testing)
+- asyncio (distributed fan-out)
 
-## Doğrulama Stratejisi (kritik — bu proje için özellikle önemli)
+## Validation Strategy (critical — especially important for this project)
 
-Kendi BM25 implementasyonumuzun **doğru** çalıştığını nasıl bileceğiz? "Çalışıyor" (hata vermiyor) ile "doğru çalışıyor" (doğru sonucu üretiyor) çok farklı şeyler. Çözüm: aynı küçük test korpusunda, `rank_bm25` kütüphanesiyle üretilen skorlarla **karşılaştırma testi** yazacağız. Bu kütüphane asla ana koda entegre edilmeyecek — sadece ayrı bir doğrulama/karşılaştırma dosyasında, referans olarak kullanılacak.
+How do we know our own BM25 implementation is **correct**? "Works"
+(doesn't error) and "works correctly" (produces the right result) are
+very different things. Solution: on the same small test corpus, we write
+a **comparison test** against scores produced by the `rank_bm25` library.
+This library is never integrated into the main code — it's used only in
+a separate validation/comparison file, purely as a reference.
 
-## Referans Veri Seti
+## Reference Dataset
 
-Rastgele/sentetik veri değil, **gerçek bir Türkçe metin korpusu** (örn. Türkçe Wikipedia'dan alınmış 200-500 makale) kullanılacak — böylece "alaka düzeyi" (relevance) gerçek anlam taşıyor, sonuçları göz kararı da değerlendirebiliyoruz.
+Rather than random/synthetic data, a **real Turkish text corpus** is used
+(e.g. 200-500 articles from Turkish Wikipedia) for validation and
+eyeballing relevance — so that "relevance" carries real meaning and
+results can be sanity-checked by hand.
 
-## Başarı Kriterleri
+## Success Criteria
 
-- Faz 6 sonunda: gerçek bir HTTP isteğiyle uçtan uca, tek-node arama çalışıyor
-- Faz 8 sonunda: 3 shard'a dağıtılmış veri üzerinde, tek-node sonuçlarıyla tutarlı (açıklanabilir farklarla) dağıtık arama çalışıyor
-- Faz 10 sonunda: Locust ile yük testi yapılmış, p50/p95/p99 gecikme metrikleri ölçülmüş
+- End-to-end, single-node search working over a real HTTP request
+- Distributed search across 3 shards, consistent with single-node results
+  (within explainable differences)
+- Load-tested with Locust, p50/p95/p99 latency metrics measured

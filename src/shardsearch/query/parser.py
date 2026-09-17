@@ -1,128 +1,129 @@
-"""Boolean sorgu dizgisini ayrıştırma ağacına çeviren recursive-descent parser.
+"""Recursive-descent parser turning a boolean query string into a parse tree.
 
-Gramer (öncelik, en dışta en düşük olacak şekilde kodlanmış):
+Grammar (precedence encoded outside-in, lowest first):
 
-    sorgu := veya
-    veya  := ve (OR ve)*        # AND'den daha düşük öncelik
-    ve    := terim (AND terim)* # OR'dan daha sıkı bağlanır
-    terim := KELIME | "IFADE" | ( sorgu )
+    query := or_expr
+    or_expr  := and_expr (OR and_expr)*   # binds looser than AND
+    and_expr := term (AND term)*          # binds tighter than OR
+    term     := WORD | "PHRASE" | ( query )
 
-AND'in OR'dan sıkı bağlanması bilinçli bir seçim: SQL, Lucene/Elasticsearch
-klasik sözdizimi ve genel olarak programlama dillerindeki and/or önceliğiyle
-aynı kural. "a AND b OR c" bu yüzden "(a AND b) OR c" olarak ayrıştırılır.
+AND binding tighter than OR is a deliberate choice: it matches SQL,
+Lucene/Elasticsearch's classic syntax, and and/or precedence in
+programming languages generally. "a AND b OR c" is therefore parsed as
+"(a AND b) OR c".
 
-Operatörsüz yan yana yazım ("kedi köpek", aralarında AND/OR yok) bilinçli
-olarak DESTEKLENMİYOR — örtük bir operatör varsaymak yerine SorguHatasi
-fırlatılıyor (bkz. docs/known-limitations.md).
+Implicit juxtaposition ("cat dog", no AND/OR between them) is
+deliberately NOT supported — rather than assume an implicit operator, a
+QueryError is raised (see docs/known-limitations.md).
 """
 
 import re
 
-from shardsearch.query.ast import Ifade, SorguDugumu, Terim, Ve, Veya
+from shardsearch.query.ast import And, Or, Phrase, QueryNode, Term
 from shardsearch.tokenizer import tokenize
 
 _TOKEN_REGEX = re.compile(r'"[^"]*"|[()]|[^\s()]+')
 
 
-class SorguHatasi(Exception):
+class QueryError(Exception):
     pass
 
 
-def _sorgu_tokenlestir(sorgu_metni: str) -> list[tuple[str, str]]:
-    """Ham sorgu dizgisini (tür, deger) çiftlerine böler.
+def _tokenize_query(query_text: str) -> list[tuple[str, str]]:
+    """Splits the raw query string into (kind, value) pairs.
 
-    Tür şunlardan biri: PHRASE, LPAREN, RPAREN, AND, OR, WORD.
-    AND/OR büyük/küçük harf duyarsız tanınır (kullanıcı "and"/"or" da
-    yazabilir); WORD ve PHRASE içeriği burada normalize edilmez, bu iş
-    parser'da _terim()'e bırakılır.
+    kind is one of: PHRASE, LPAREN, RPAREN, AND, OR, WORD. AND/OR are
+    recognized case-insensitively (the user may also type "and"/"or");
+    WORD and PHRASE content is not normalized here, that's left to
+    _term() in the parser.
     """
-    tokenler: list[tuple[str, str]] = []
-    for parca in _TOKEN_REGEX.findall(sorgu_metni):
-        if parca.startswith('"'):
-            tokenler.append(("PHRASE", parca[1:-1]))
-        elif parca == "(":
-            tokenler.append(("LPAREN", parca))
-        elif parca == ")":
-            tokenler.append(("RPAREN", parca))
-        elif parca.upper() == "AND":
-            tokenler.append(("AND", parca))
-        elif parca.upper() == "OR":
-            tokenler.append(("OR", parca))
+    tokens: list[tuple[str, str]] = []
+    for part in _TOKEN_REGEX.findall(query_text):
+        if part.startswith('"'):
+            tokens.append(("PHRASE", part[1:-1]))
+        elif part == "(":
+            tokens.append(("LPAREN", part))
+        elif part == ")":
+            tokens.append(("RPAREN", part))
+        elif part.upper() == "AND":
+            tokens.append(("AND", part))
+        elif part.upper() == "OR":
+            tokens.append(("OR", part))
         else:
-            tokenler.append(("WORD", parca))
-    return tokenler
+            tokens.append(("WORD", part))
+    return tokens
 
 
-class _SorguAyristirici:
-    def __init__(self, tokenler: list[tuple[str, str]]) -> None:
-        self._tokenler = tokenler
+class _QueryParser:
+    def __init__(self, tokens: list[tuple[str, str]]) -> None:
+        self._tokens = tokens
         self._pos = 0
 
-    def _mevcut(self) -> tuple[str, str] | None:
-        if self._pos < len(self._tokenler):
-            return self._tokenler[self._pos]
+    def _current(self) -> tuple[str, str] | None:
+        if self._pos < len(self._tokens):
+            return self._tokens[self._pos]
         return None
 
-    def _ilerle(self) -> tuple[str, str]:
-        token = self._mevcut()
+    def _advance(self) -> tuple[str, str]:
+        token = self._current()
         if token is None:
-            raise SorguHatasi("Sorgu beklenenden erken bitti")
+            raise QueryError("Query ended earlier than expected")
         self._pos += 1
         return token
 
-    def ayristir(self) -> SorguDugumu:
-        if self._mevcut() is None:
-            raise SorguHatasi("Boş sorgu")
-        dugum = self._veya()
-        if self._mevcut() is not None:
-            raise SorguHatasi(
-                f"Beklenmeyen token, muhtemelen aralarında AND/OR olmayan iki "
-                f"terim yan yana yazılmış: {self._mevcut()}"
+    def parse(self) -> QueryNode:
+        if self._current() is None:
+            raise QueryError("Empty query")
+        node = self._or_expr()
+        if self._current() is not None:
+            raise QueryError(
+                f"Unexpected token, likely two terms written next to each other "
+                f"without AND/OR between them: {self._current()}"
             )
-        return dugum
+        return node
 
-    def _veya(self) -> SorguDugumu:
-        sol = self._ve()
-        while self._mevcut() is not None and self._mevcut()[0] == "OR":
-            self._ilerle()
-            sag = self._ve()
-            sol = Veya(sol, sag)
-        return sol
+    def _or_expr(self) -> QueryNode:
+        left = self._and_expr()
+        while self._current() is not None and self._current()[0] == "OR":
+            self._advance()
+            right = self._and_expr()
+            left = Or(left, right)
+        return left
 
-    def _ve(self) -> SorguDugumu:
-        sol = self._terim()
-        while self._mevcut() is not None and self._mevcut()[0] == "AND":
-            self._ilerle()
-            sag = self._terim()
-            sol = Ve(sol, sag)
-        return sol
+    def _and_expr(self) -> QueryNode:
+        left = self._term()
+        while self._current() is not None and self._current()[0] == "AND":
+            self._advance()
+            right = self._term()
+            left = And(left, right)
+        return left
 
-    def _terim(self) -> SorguDugumu:
-        token = self._mevcut()
+    def _term(self) -> QueryNode:
+        token = self._current()
         if token is None:
-            raise SorguHatasi("Terim beklenirken sorgu bitti")
-        tur, deger = token
+            raise QueryError("Query ended while expecting a term")
+        kind, value = token
 
-        if tur == "LPAREN":
-            self._ilerle()
-            dugum = self._veya()
-            kapanis = self._mevcut()
-            if kapanis is None or kapanis[0] != "RPAREN":
-                raise SorguHatasi("Kapanan parantez ')' bekleniyordu")
-            self._ilerle()
-            return dugum
+        if kind == "LPAREN":
+            self._advance()
+            node = self._or_expr()
+            closing = self._current()
+            if closing is None or closing[0] != "RPAREN":
+                raise QueryError("Expected a closing parenthesis ')'")
+            self._advance()
+            return node
 
-        if tur == "PHRASE":
-            self._ilerle()
-            return Ifade(tuple(tokenize(deger)))
+        if kind == "PHRASE":
+            self._advance()
+            return Phrase(tuple(tokenize(value)))
 
-        if tur == "WORD":
-            self._ilerle()
-            kelimeler = tokenize(deger)
-            return Terim(kelimeler[0] if kelimeler else "")
+        if kind == "WORD":
+            self._advance()
+            words = tokenize(value)
+            return Term(words[0] if words else "")
 
-        raise SorguHatasi(f"Terim beklenirken beklenmeyen token: {token}")
+        raise QueryError(f"Unexpected token while expecting a term: {token}")
 
 
-def ayristir(sorgu_metni: str) -> SorguDugumu:
-    return _SorguAyristirici(_sorgu_tokenlestir(sorgu_metni)).ayristir()
+def parse(query_text: str) -> QueryNode:
+    return _QueryParser(_tokenize_query(query_text)).parse()

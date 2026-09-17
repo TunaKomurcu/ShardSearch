@@ -1,29 +1,29 @@
-# Bilinen Sınırlamalar
+# Known Limitations
 
-- **Tireli birleşik kelimeler (Faz 1 tokenizer):** `tokenize()` apostrof
-  dışındaki tüm harf-olmayan karakterleri sessizce atıyor, split noktası
-  olarak kullanmıyor. Bu yüzden `"anayasa-mahkemesi"` gibi tireli kelimeler
-  `"anayasamahkemesi"` şeklinde tek token'a düşüyor. Şimdilik bilinçli
-  olarak ertelendi — Faz 2'de gerçek Wikipedia korpusuyla karşılaşınca ne
-  sıklıkla sorun çıkardığına bakıp karar verilecek.
+- **Hyphenated compound words (Phase 1 tokenizer):** `tokenize()` silently
+  drops every non-letter character except the apostrophe, rather than
+  using it as a split point. So hyphenated words like
+  `"anayasa-mahkemesi"` collapse into a single token,
+  `"anayasamahkemesi"`. Deliberately deferred for now — revisit once
+  real-world corpus use surfaces how often this actually causes problems.
 
-- **Operatörsüz yan yana yazım (Faz 5 sorgu ayrıştırıcı):** `"kedi köpek"`
-  gibi aralarında `AND`/`OR` olmayan bir sorgu **parse hatası** verir —
-  örtük bir AND/OR varsayılmıyor. Bilinçli bir tercih: SPEC'in "anlaşılan
-  kod" önceliğine sadık kalıp sessiz bir varsayım eklememek için. Faz 6'da
-  (FastAPI MVP) gerçek kullanım sonrası, kullanıcı deneyimi açısından
-  gerçekten gerekli olup olmadığına bakılıp karar verilecek.
+- **Implicit juxtaposition (Phase 5 query parser):** a query like
+  `"kedi köpek"` (no `AND`/`OR` between the words) raises a **parse
+  error** — no implicit AND/OR is assumed. A deliberate choice, staying
+  true to the spec's "understood code" priority rather than adding a
+  silent assumption. Worth revisiting after real usage, to see whether
+  users actually need it.
 
-- **Redis cache, gerçek Redis'e karşı doğrulanmadı (Faz 9):** Geliştirme
-  ortamında ne gerçek bir Redis sunucusu, ne Docker, ne de çalışır
-  durumda bir WSL var (sanallaştırma servisi kapalı). `AramaCache`
-  (`src/shardsearch/api/cache.py`) redis-py'nin gerçek API'sine karşı
-  yazıldı ve gerçek Redis'le birebir aynı şekilde çalışması beklenir, ama
-  hem otomatik testlerde hem bu oturumdaki manuel doğrulamada `fakeredis`
-  (bellek içi, redis-py protokolünü taklit eden bir test kütüphanesi)
-  kullanıldı. Gerçek ağ round-trip'i, bağlantı kopması/timeout davranışı,
-  gerçek TTL süresi hassasiyeti hiç test edilmedi. WSL düzeltilince ya da
-  Docker Desktop kurulup bağımsız çalışınca, aynı test suite'i
-  (`tests/unit/test_cache.py`, `tests/unit/test_api.py`'deki cache
-  testleri) `SHARDSEARCH_REDIS_URL` gerçek bir sunucuyu gösterecek şekilde
-  gerçek Redis'e karşı çalıştırılıp bu not kapatılmalı.
+- **The Redis cache has not been verified against a real Redis:** the
+  development environment had no real Redis server, Docker, or working
+  WSL available (virtualization was disabled). `SearchCache`
+  (`src/shardsearch/api/cache.py`) is written against redis-py's real API
+  and is expected to behave identically against a real Redis server, but
+  both the automated tests and manual verification during development
+  used `fakeredis` (an in-memory library that mimics the redis-py
+  protocol). Real network round-trips, connection-drop/timeout behavior,
+  and real TTL expiry timing were never exercised. Once a real Redis or
+  Docker setup is available, the same test suite
+  (`tests/unit/test_cache.py`, the cache-related tests in
+  `tests/unit/test_api.py`) should be re-run against it by pointing
+  `SHARDSEARCH_REDIS_URL` at a real server, and this note can be closed.

@@ -1,119 +1,124 @@
-# Öğrenmeler: ShardSearch, Faz 0'dan Buraya
+# Learnings: ShardSearch, From Phase 0 to Here
 
-Bu, projenin kapanış dokümanı — Faz 0'dan (proje iskeleti) Faz 10'a
-(gözlemlenebilirlik + yük testi, PHASES.md'nin son planlı fazı) kadar
-geçen yolculuğun özeti ve genel dersi. `docs/yolculuk-ozeti.md` "hangi
-hatalar bulundu, nasıl çözüldü"ye odaklanıyordu; bu doküman bir adım
-geri çekilip **neden bu hataların "kara kutu kullansaydık" görünmez
-kalacağını** ele alıyor — projenin asıl amacı buydu.
+This is the project's closing document — a summary and general takeaway
+from the journey from Phase 0 (project skeleton) to Phase 10
+(observability + load testing, the last planned phase in PHASES.md).
+`docs/postmortems.md` focused on "which bugs were found, how were they
+fixed"; this document steps back and looks at **why these bugs would have
+stayed invisible if we'd used off-the-shelf tools as black boxes** — which
+was the whole point of the project.
 
-## Ne yapıldı (özet)
+## What was built (summary)
 
-11 faz planlandı, 10'u (0-10) tamamlandı — Faz 11 (Zemberek, hibrit
-vektör arama, Docker) SPEC.md'de zaten opsiyonel/stretch olarak
-işaretliydi, bilinçli olarak atlandı (düşük öğrenme kaldıracı, hibrit
-arama zaten mevcut iş tecrübesinde vardı). SPEC.md'nin iki büyük başarı
-kriteri de karşılandı:
+11 phases were planned, 10 (0-10) were completed — Phase 11 (Zemberek,
+hybrid vector search, Docker) was already marked optional/stretch in
+SPEC.md and was deliberately skipped (low learning leverage; hybrid
+search experience was already covered by prior work experience). Both of
+SPEC.md's major success criteria were met:
 
-- **Faz 6 sonu:** gerçek bir HTTP isteğiyle uçtan uca, tek-node arama çalışıyor.
-- **Faz 8 sonu:** 3 shard'a dağıtılmış veri üzerinde, tek-node sonuçlarıyla
-  tutarlı (açıklanabilir farklarla) dağıtık arama çalışıyor.
+- **End of Phase 6:** end-to-end, single-node search works over a real
+  HTTP request.
+- **End of Phase 8:** distributed search across 3 shards produces results
+  consistent with single-node search (within explainable differences).
 
-Detaylı faz-faz özet: `docs/mvp-ozet.md` (Faz 0-6) ve
-`docs/faz-8-sonrasi-durum.md` (Faz 7-8).
+Detailed phase-by-phase summaries: `docs/mvp-summary.md` (Phases 0-6) and
+`docs/phase-8-distributed-status.md` (Phases 7-8).
 
-## Bulunan gerçek hatalar (özet — detaylar docs/yolculuk-ozeti.md'de)
+## Real bugs found (summary — details in docs/postmortems.md)
 
-1. **Faz branch'ini açmayı unutmak** (Faz 2) — süreç disiplini, `git
-   reset --hard` + branch taşımayla düzeltildi.
-2. **Tanımsız tie-break** (Faz 3) — eşit BM25 skorlu belgelerin sırası
-   bir `set`'in hash sırasına bağlıydı; `(-skor, belge_id)` ikincil
-   anahtarıyla deterministik hale getirildi.
-3. **Elma-armut test karşılaştırması** (Faz 8) — dağıtık aramayı Faz 5'in
-   boolean parser'ını hiç bilmeyen eski bir fonksiyonla karşılaştırıyordum;
-   tek-node referansını da aynı `dagitik_ara()`'ya (tek shard'la) vererek
-   düzeltildi.
-4. **Paketin kendi alt-modülünü gölgelemesi** (Faz 9) — `__init__.py`'de
-   alt-modülle aynı isimde bir export, dotted-path attribute çözümlemesini
-   (pytest monkeypatch dahil) bozuyordu.
-5. **Dağıtık yerel IDF sapması** (Faz 8) — bilinçli bir yaklaşıklık,
-   ölçülüp büyüklüğü kanıtlandı (dengeli dağıtımda küçük, dengesizde 5
-   kattan büyük).
-6. **Event loop'u bloke eden gizli senkron çağrı** (Faz 10) — `async def`
-   bir route'un içinde senkron Redis çağrıları, tüm event loop'u
-   durduruyordu; gerçek Locust yük testi olmasa asla görünmezdi.
+1. **Forgetting to open a phase branch** (Phase 2) — a process
+   discipline issue, fixed with `git reset --hard` + moving the branch.
+2. **Undefined tie-break** (Phase 3) — the order of equally-scored
+   documents depended on a `set`'s hash order; made deterministic with a
+   `(-score, doc_id)` secondary key.
+3. **Apples-to-oranges test comparison** (Phase 8) — distributed search
+   was being compared against an old function that had no idea about the
+   Phase 5 boolean parser; fixed by feeding the single-node reference
+   through the same `distributed_search()` (with a single shard).
+4. **A package shadowing its own submodule** (Phase 9) — an export in
+   `__init__.py` sharing a name with its submodule broke dotted-path
+   attribute resolution (including pytest monkeypatch).
+5. **Distributed local IDF deviation** (Phase 8) — a deliberate
+   approximation, measured and proven (small under even distribution,
+   more than 5x under an unbalanced one).
+6. **A hidden synchronous call blocking the event loop** (Phase 10) —
+   synchronous Redis calls inside an `async def` route halted the entire
+   event loop; would never have surfaced without a real Locust load test.
 
-## "Kara kutu kullanmak" ile "sıfırdan inşa etmek" arasındaki fark, somut örneklerle
+## "Using a black box" vs. "building it from scratch," in concrete terms
 
-Projenin başındaki amaç şuydu: *"çalışıyor" (hata vermiyor) ile "doğru
-çalışıyor" (neden doğru çalıştığını bilmek) arasındaki farkı yaşamak.*
-Her fazda bu fark farklı bir şekilde somutlaştı:
+The project's starting premise was: *experience the difference between
+"it works" (doesn't error) and "it works correctly" (understanding why it
+works).* That difference showed up concretely, differently, in every
+phase:
 
-**Tokenizer (Faz 1):** Bir kütüphane kullansaydık `.lower()` çağırıp
-geçerdik. Sıfırdan yazınca, Python'un `str.lower()`'ının Türkçe'de
-`'I'` → `'i'` yaptığını (doğrusu `'ı'`) ve `'İ'` → `'i̇'` (birleşik
-karakter) ürettiğini fark etmek zorunda kaldık — bu, Unicode'un
-"küçültme" kavramının dile göre değiştiğini somut olarak öğretti.
+**Tokenizer (Phase 1):** with a library, we'd have just called `.lower()`
+and moved on. Building it from scratch forced us to notice that Python's
+`str.lower()` turns `'I'` into `'i'` (should be `'ı'`) and `'İ'` into
+`'i̇'` (a combining character) — a concrete lesson that the very notion of
+"lowercasing" is language-dependent in Unicode.
 
-**Ters indeks (Faz 2):** Bir arama kütüphanesi bunu bizden gizlerdi.
-Sıfırdan yazınca, postings listesinin SIRALI tutulmasının (Faz 5/8'in
-kesişim/birleştirme algoritmalarının O(n) çalışabilmesi için) baştan
-tasarım kararı olması gerektiğini gördük — sona bırakılan bir "sort"
-değil.
+**Inverted index (Phase 2):** a search library would have hidden this
+entirely. Building it from scratch showed that keeping the postings list
+SORTED needs to be a design decision made up front (so the intersection/
+merge algorithms in Phases 5/8 can run in O(n)) — not a "sort" bolted on
+at the end.
 
-**BM25 (Faz 3):** `rank_bm25 import BM25Okapi` yazıp geçebilirdik. Kendi
-yazınca, IDF formülünün klasik hâlinin (Robertson-Sparck Jones)
-NEGATİF çıkabildiğini, gerçek kütüphanelerin bunu bir epsilon ile
-yamaladığını ve bizim bunun yerine formülün pozitif garanti eden bir
-varyantını seçebileceğimizi (ve bu seçimin SIRALAMA testlerini nasıl
-etkilediğini) doğrudan yaşadık.
+**BM25 (Phase 3):** we could have just written `from rank_bm25 import
+BM25Okapi`. Writing it ourselves meant directly experiencing that the
+classic (Robertson-Sparck Jones) IDF formula can go NEGATIVE, that real
+libraries patch this with an epsilon, and that we could instead choose a
+variant of the formula that's positive by construction (and how that
+choice affects ranking tests).
 
-**SQLite depolama (Faz 4):** Bir ORM kullansaydık index'leri o yönetirdi.
-Sıfırdan şema tasarlayınca, `(token, belge_id)` birincil anahtarının
-SADECE token'la başlayan aramalarda işe yaradığını, `belge_id` tek
-başına arandığında (upsert silme) AYRI bir index gerektiğini —
-bellek-içi versiyondaki Python dict'in SQL karşılığının bu olduğunu —
-görmek zorunda kaldık.
+**SQLite storage (Phase 4):** an ORM would have managed indexes for us.
+Designing the schema by hand meant seeing that a `(token, doc_id)` primary
+key only helps searches that start with the token, and that searching by
+`doc_id` alone (for upsert deletion) needs a SEPARATE index — the SQL
+counterpart of the in-memory version's Python dict.
 
-**Sorgu ayrıştırıcı (Faz 5):** Bir regex ya da hazır parser kullansaydık
-operatör önceliği "bir yerlerde" gizli kalırdı. Recursive-descent
-gramerini elle yazınca, `AND`'in `OR`'dan sıkı bağlanmasının bir "kural"
-değil, gramerin YAPISININ (veya → ve → terim) doğal bir SONUCU olduğunu
-gördük — ayrı bir öncelik tablosuna hiç gerek kalmadı.
+**Query parser (Phase 5):** a regex or off-the-shelf parser would have
+left operator precedence hidden "somewhere." Writing the recursive-
+descent grammar by hand showed that AND binding tighter than OR isn't a
+"rule" imposed from outside, it's a natural CONSEQUENCE of the grammar's
+STRUCTURE (or → and → term) — no separate precedence table needed at all.
 
-**Sharding (Faz 7):** `hash(id) % N` yazıp geçebilirdik. Consistent
-hashing'i elle kurunca, NEDEN sanal düğümlere ihtiyaç olduğunu (dağılım
-varyansı ölçülerek KANITLANDI, sadece iddia edilmedi) ve resharding'in
-NEDEN sadece eski→yeni geçişe izin verip eski→eski'ye izin vermediğini
-(test edilerek doğrulandı) somut olarak gördük.
+**Sharding (Phase 7):** we could have just written `hash(id) % N`.
+Building consistent hashing by hand made concrete WHY virtual nodes are
+needed (PROVEN by measuring distribution variance, not just asserted) and
+WHY resharding should only allow old→new moves and never old→old moves
+(verified by testing).
 
-**Dağıtık sorgu (Faz 8):** Elasticsearch kullansaydık "local IDF
-kullanıyor" diye bir dokümantasyon satırı okurduk, inanırdık. Kendi
-yazınca, bu yaklaşıklığın BÜYÜKLÜĞÜNÜ kendi ellerimizle ölçüp (dengeli
-dağıtımda küçük, kasıtlı dengesizde 5 kat) kanıtladık.
+**Distributed query (Phase 8):** with Elasticsearch we'd have read a
+documentation line saying "uses local IDF" and taken it on faith. Building
+it ourselves let us measure the SIZE of that approximation with our own
+hands (small under even distribution, 5x under a deliberately unbalanced
+one) and prove it.
 
-**Cache (Faz 9):** "Cache invalidation, bilgisayar bilimindeki iki zor
-problemden biri" sözünü okumuştuk. Kendi cache-aside'ımızı yazınca, BU
-SİSTEM İÇİN "seçici invalidation imkansız çünkü BM25 istatistikleri
-global" gerçeğiyle yüzleşip kuşak-sayacı çözümüne KENDİMİZ ulaştık —
-bir kütüphane bu kararı bizim yerimize verip gizlemezdi.
+**Cache (Phase 9):** we'd read the line "cache invalidation is one of the
+two hard problems in computer science." Building our own cache-aside
+layer meant confronting, FOR THIS SYSTEM SPECIFICALLY, the fact that
+"selective invalidation is impossible because BM25 statistics are global"
+and arriving at the generation-counter solution OURSELVES — a library
+would have made that decision for us and hidden it.
 
-**Gözlemlenebilirlik + yük testi (Faz 10) — en derin ders:** Eğer FastAPI'yi
-"kara kutu" olarak kullanıp `async def` yazmanın kendiliğinden yeterli
-olduğunu varsaysaydık, bu proje asla bitmiş "çalışan" bir üründen farklı
-görünmezdi — testler geçerdi, curl ile tek istekler hızlı dönerdi. Sadece
-GERÇEK, EŞZAMANLI bir yük testi (ve threading.Lock gibi "makul" bir ilk
-şüpheliyi izole testle elemeye istekli olmak) `async def`'in içindeki
-senkron bir çağrının tüm event loop'u durdurduğunu ortaya çıkardı. Bu,
-"anlaşıldığını düşünmek" ile "gerçekten anlamak" arasındaki farkın en
-net kanıtıydı — ve tam olarak SPEC.md'nin baştan beri peşinde olduğu şey.
+**Observability + load testing (Phase 10) — the deepest lesson:** if
+we'd treated FastAPI as a "black box" and assumed writing `async def` was
+sufficient on its own, this project would never have looked any different
+from a finished "working" product — tests would pass, single curl
+requests would return fast. Only a REAL, CONCURRENT load test (and a
+willingness to rule out a "reasonable" first suspect like
+threading.Lock with an isolated test) revealed that a synchronous call
+inside `async def` was halting the entire event loop. This was the
+clearest proof of the gap between "thinking you understand" and "actually
+understanding" — exactly what SPEC.md set out to pursue from the start.
 
-## Kapanış
+## Closing
 
-Bu proje "üretime hazır bir Elasticsearch alternatifi" olmayı hiç
-hedeflemedi (SPEC.md, satır 5). Hedef, arama motorlarının mekanizmalarını
-gerçekten anlayarak inşa etmekti. Bulunan 6 gerçek şeyin 5'i düzeltilmiş
-hatalardı (git branch, tie-break, elma-armut karşılaştırma, `__init__.py`
-gölgelenmesi, event loop bloklanması); 1'i (yerel IDF sapması) bilinçli
-kabul edilmiş ve ÖLÇÜLMÜŞ bir yaklaşıklıktı. Hiçbiri "çalışıyor, o zaman
-doğrudur" varsayımıyla bırakılmadı.
+This project never aimed to be a "production-ready Elasticsearch
+alternative" (SPEC.md, line 5). The goal was to build search-engine
+mechanics by truly understanding them. Of the 6 real things found, 5 were
+bugs that got fixed (git branch, tie-break, apples-to-oranges comparison,
+`__init__.py` shadowing, event-loop blocking); 1 (local IDF deviation)
+was a deliberately accepted and MEASURED approximation. None of them were
+left on a "works, therefore correct" assumption.
